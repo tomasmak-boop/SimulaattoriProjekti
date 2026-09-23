@@ -14,6 +14,10 @@ Design notes:
 - Pulse commands (spec.pulse=True) are auto-cleared on the next tick.
 - External reads and writes are observed via asyncua's PostRead/PostWrite
   callbacks, which feed idle detection in the worker runtime.
+- Browse names are qualified in the adapter's own namespace. Passing a
+  plain string to add_object/add_variable/add_folder would place the
+  BrowseName in ns=0 (the OPC UA base namespace), which makes client-side
+  path lookups like `2:Commands` fail with BadNoMatch.
 """
 
 from __future__ import annotations
@@ -203,21 +207,23 @@ class OPCUAAdapter:
             self._namespace_uri
         )
 
+        ns = self._namespace_idx
+
         root = await self._server.nodes.objects.add_object(
-            ua.NodeId(self._sim_id, self._namespace_idx),
-            self._sim.SIMULATION_NAME,
+            ua.NodeId(self._sim_id, ns),
+            ua.QualifiedName(self._sim.SIMULATION_NAME, ns),
         )
         commands_folder = await root.add_folder(
-            ua.NodeId(f"{self._sim_id}.Commands", self._namespace_idx),
-            "Commands",
+            ua.NodeId(f"{self._sim_id}.Commands", ns),
+            ua.QualifiedName("Commands", ns),
         )
         measurements_folder = await root.add_folder(
-            ua.NodeId(f"{self._sim_id}.Measurements", self._namespace_idx),
-            "Measurements",
+            ua.NodeId(f"{self._sim_id}.Measurements", ns),
+            ua.QualifiedName("Measurements", ns),
         )
         status_folder = await root.add_folder(
-            ua.NodeId(f"{self._sim_id}.Status", self._namespace_idx),
-            "Status",
+            ua.NodeId(f"{self._sim_id}.Status", ns),
+            ua.QualifiedName("Status", ns),
         )
 
         await self._build_commands(commands_folder)
@@ -269,11 +275,12 @@ class OPCUAAdapter:
     # ---- address space construction ----
 
     async def _build_commands(self, folder: ua.Node) -> None:
+        ns = self._namespace_idx
         for name, spec in self._sim.commands().items():
             default = spec.default if spec.default is not None else _zero_for(spec.type)
             node = await folder.add_variable(
-                ua.NodeId(f"{self._sim_id}.Commands.{name}", self._namespace_idx),
-                name,
+                ua.NodeId(f"{self._sim_id}.Commands.{name}", ns),
+                ua.QualifiedName(name, ns),
                 default,
                 _ua_type(spec.type),
             )
@@ -293,13 +300,14 @@ class OPCUAAdapter:
         )
 
     async def _build_measurements(self, folder: ua.Node) -> None:
+        ns = self._namespace_idx
         for name, spec in self._sim.measurements().items():
             description = (
                 f"{spec.description} [{spec.unit}]" if spec.unit else spec.description
             )
             node = await folder.add_variable(
-                ua.NodeId(f"{self._sim_id}.Measurements.{name}", self._namespace_idx),
-                name,
+                ua.NodeId(f"{self._sim_id}.Measurements.{name}", ns),
+                ua.QualifiedName(name, ns),
                 _zero_for(spec.type),
                 _ua_type(spec.type),
             )
@@ -315,10 +323,11 @@ class OPCUAAdapter:
         )
 
     async def _build_status(self, folder: ua.Node) -> None:
+        ns = self._namespace_idx
         for name, spec in self._sim.status().items():
             node = await folder.add_variable(
-                ua.NodeId(f"{self._sim_id}.Status.{name}", self._namespace_idx),
-                name,
+                ua.NodeId(f"{self._sim_id}.Status.{name}", ns),
+                ua.QualifiedName(name, ns),
                 _zero_for(spec.type),
                 _ua_type(spec.type),
             )
