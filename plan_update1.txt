@@ -1,0 +1,128 @@
+1. Pub/Sub vs. Streams — correct, and it's the most important fix
+
+The reviewer is right. PUBLISH/SUBSCRIBE in Redis is fire-and-forget: if there are no subscribers at the moment of publish, the message is gone. Your system has two windows where this matters:
+
+    Daemon restart: Django publishes StartSessionCommand, daemon is restarting, message is lost. Session sits in PENDING forever.
+
+    Django Channels worker restart: Daemon publishes SessionStartedEvent, no one is subscribed, event is lost. Session sits in STARTING forever.
+
+Both are real. I was wrong to use raw pub/sub for the command and event channels.
+
+The fix — Redis Streams with consumer groups:
+python
+
+# Publisher (Django)
+r.xadd(REDIS_CMD_STREAM, cmd.model_dump(), maxlen=10000)
+
+# Subscriber (daemon)
+r.xgroup_create(REDIS_CMD_STREAM, "worker-pool", id="0", mkstream=True)
+while True:
+    entries = r.xreadgroup("worker-pool", consumer_name,
+                           {REDIS_CMD_STREAM: ">"}, count=10, block=5000)
+    for stream, msgs in entries:
+        for msg_id, fields in msgs:
+            handle(fields)
+            r.xack(REDIS_CMD_STREAM, "worker-pool", msg_id)
+
+maxlen caps the stream so it doesn't grow forever. Unacked messages are redelivered on reconnect. Two other properties matter:
+
+    At-least-once delivery. If a command is processed twice, it must be idempotent. StartSessionCommand with the same session_id should be a no-op if the session already exists — check Redis before spawning.
+
+    Consumer groups allow multiple workers. If you later scale to two daemon instances, each command is delivered to exactly one, and both can see events via separate groups.
+
+Heartbeats stay as TTL keys, not stream entries. They're high-frequency, ephemeral, and self-expiring — exactly what SET ... EX 30 is for. Streams are for one-shot commands and events.
+2. Subprocess re-adoption — correct, and I underestimated it
+
+I described reconciliation vaguely ("the daemon re-adopts them"). The reviewer is right that this doesn't work as written. Popen objects live only in the parent's memory. When the daemon dies, those handles are gone. The new daemon cannot call .poll() or .wait() on a process it didn't spawn. It has no handle at all.
+
+The fix is a two-part identity for every worker:
+
+    A PID file at a known path — /var/lib/cip-sim/pids/<session_id>.pid. Written by the worker itself, not the daemon, to avoid a race where the daemon writes the file before the worker is fully alive. The worker writes it after it binds its OPC UA port and is ready.
+
+    A Redis heartbeat — cip:hb:<sid> with TTL 30s, refreshed every 10s.
+
+On daemon startup, reconcile:
+python
+
+for pid_file in Path("/var/lib/cip-sim/pids").glob("*.pid"):
+    session_id = pid_file.stem
+    pid = int(pid_file.read_text())
+    alive = os.kill(pid, 0)  # signal 0 = existence check
+    hb = r.get(f"cip:hb:{session_id}")
+    if alive and hb:
+        adopt(session_id, pid)   # track without Popen; use os.kill for control
+    else:
+        cleanup(session_id)      # stale pid file, stale lease
+
+Control of adopted processes happens via os.kill(pid, SIGTERM) rather than Popen.terminate(). Slightly less elegant, but works across restarts.
+
+The reviewer's alternative — systemd-run --scope — is actually better. Each worker becomes a transient systemd unit:
+bash
+
+systemd-run --unit=cip-worker-<session_id> --scope \
+    --property=MemoryMax=256M --property=CPUQuota=50% \
+    /opt/cip-sim/.venv/bin/python -m worker_pool.worker.main ...
+
+Advantages:
+
+    systemd owns the process, so daemon restarts don't matter. The daemon just queries systemctl list-units 'cip-worker-*'.
+
+    Resource limits per worker — MemoryMax, CPUQuota — for free, without cgroups tinkering.
+
+    Graceful shutdown via systemctl stop cip-worker-<sid> — sends SIGTERM to the cgroup, waits, escalates to SIGKILL after TimeoutStopSec.
+
+    Kill the daemon and workers keep running; restart the daemon and it rediscovers them. This is the "rolling deploy without downtime" story I claimed but couldn't deliver.
+
+Cost: systemd must be present (it is, on Ubuntu 22.04), the daemon needs permission to call systemctl (via polkit or by running as a user with systemd-run rights), and you gain a list-units dependency in the daemon. Worth it.
+
+Recommendation: use systemd-run --scope instead of raw Popen. I should have proposed this originally. It solves re-adoption, resource limits, and clean shutdown in one move.
+3. OPC UA binding and auth — correct, with a nuance
+
+The reviewer is right that bind 0.0.0.0 + anonymous + no per-session auth means any student on the intranet can write commands to any other student's simulation port. Given your environment is a college lab where some students will absolutely try this, it's worth addressing from v1.
+
+But: the plan deliberately deferred OPC UA security to a "future phase" because certificates + trust lists add real friction to CODESYS setup. The reviewer's framing ("this is a bug") is a bit strong given the stated trust model — but their concern is legitimate, because "trusted intranet" doesn't mean "no adversarial students."
+
+What I'd actually do in v1:
+
+    Bind workers to the lab interface only. set_endpoint(f"opc.tcp://{SERVER_IP}:{port}/...") and bind to the specific interface, not 0.0.0.0. This at least means the OPC UA servers aren't reachable from the wrong subnet.
+
+    Add a per-session shared-secret username/password. OPC UA supports UserNameIdentityToken. Generate a random password per session, store it in the Session row, display it next to the endpoint URL in the UI. CODESYS clients type it in once. Not bulletproof, but it stops casual tampering and creates a link between OPC UA activity and a specific user.
+
+    Log the OPC UA client identity (username, IP) in the audit log. Even if you don't reject unauthenticated clients in v1, log them so you can see who connected when.
+
+Full certificate-based SignAndEncrypt with per-session certs remains a v2 thing. It's the right end state, but it's a lot of ceremony for a lab project, and shared-secret username/password is the 80/20 fix for the specific attack the reviewer describes.
+4. UI telemetry rate — correct, minor
+
+The reviewer is right. Broadcasting at 10 Hz to browsers is wasteful — most monitors refresh at 60 Hz, so 10 Hz looks fine for some things (level bars, numbers) and janky for others (animated pipes). But the real problem is CPU: every WebSocket message triggers DOM updates, style recalculations, and canvas redraws. With several dashboards open, that adds up.
+
+Decouple the three rates:
+Loop	Rate	Why
+Physics step()	10 Hz	Simulation stability, matches dt = 0.1
+OPC UA update()	10 Hz	PLC response fidelity, unchanged
+WebSocket broadcast	2–5 Hz	Enough for smooth visuals, cheap on the browser
+
+Implementation: the worker runs its 10 Hz loop as before, but accumulates snapshots and only publishes to the Channels group every N ticks. Or Django's Channels consumer subscribes to a Redis Stream of snapshots and downsamples on the fan-out side. Either works; the first is simpler.
+
+I'd pick 4 Hz as the default and make it configurable via UI_BROADCAST_HZ in the env file.
+Anything the reviewer got wrong?
+
+Not really. There are two places where I'd push back gently:
+
+    Point 3 framing. "Any PLC, CODESYS client, or student on the intranet can connect" is true but the plan already acknowledged that and deferred the fix. The reviewer is right that the deferral is risky in a college context; they're wrong to imply it wasn't a conscious choice. The right response is "yes, and here's a v1 mitigation that's cheaper than full certificates," not "you're right, we must add SignAndEncrypt now."
+
+    The systemd-run recommendation is presented as an option but it's actually the better primary answer. I'd upgrade it from "consider" to "recommended."
+
+Neither of those is a substantive disagreement. The reviewer's technical analysis is sound.
+Updated plan deltas
+
+Concretely, the plan needs these changes:
+
+    Redis Streams for cip:cmd and cip:evt, with consumer groups and XACK. Heartbeats stay TTL keys.
+
+    systemd-run --scope per worker instead of Popen. Daemon discovers workers via systemctl list-units 'cip-worker-*'. PID files become advisory, not authoritative.
+
+    Bind OPC UA to the lab interface, add per-session username/password via UserNameIdentityToken, log client identity. Full certificates deferred.
+
+    Decouple UI broadcast from physics rate; default 4 Hz, configurable.
+
+None of these change the overall architecture. All four are contained refinements — the boundaries (control plane / data plane, Redis / Postgres split, plugin contract) stay exactly as designed.
