@@ -1,0 +1,198 @@
+Simulation Platform — Project Plan
+Overview
+
+A self-hosted web platform for running isolated PLC simulations. Each student gets a dedicated OPC UA endpoint, connects a CODESYS PLC, and drives a live process simulation through a browser dashboard.
+
+ Sessions are capability URLs. Anyone with a session URL can use it.
+Architecture
+
+Three tiers, two Redis Streams, one Postgres database.
+text
+
+┌─────────────────────────────────────────────────────────────┐
+│  Control plane (Django + Channels)                          │
+│  - Session catalog, REST API, browser dashboard             │
+│  - Publishes commands to Redis Streams                      │
+│  - Consumes events from Redis Streams                       │
+└──────────────────────────┬──────────────────────────────────┘
+                           │  Redis Streams (commands ↔ events)
+                           │  Redis keys (ports, heartbeats)
+┌──────────────────────────▼──────────────────────────────────┐
+│  Worker pool daemon (one systemd service)                   │
+│  - Consumes commands, spawns workers                        │
+│  - Allocates ports atomically (Redis HSETNX)                │
+│  - Spawns each worker as a systemd transient scope          │
+│  - Reconciles on restart                                    │
+└──────────────────────────┬──────────────────────────────────┘
+                           │  spawn / signal
+┌──────────────────────────▼──────────────────────────────────┐
+│  Worker processes (one per session, transient systemd units)│
+│  - Loads a plugin from sim_plugins/                         │
+│  - Runs OPC UA server + HTTP dashboard                      │
+│  - Writes heartbeat, tracks idle, exits on SIGTERM          │
+└─────────────────────────────────────────────────────────────┘
+
+Why three tiers: control plane restarts don't kill active sessions. A student's PLC stays connected while we deploy a UI fix.
+
+Why systemd-run, not Popen: systemd owns the worker process, so a daemon crash doesn't orphan sessions. Per-worker memory and CPU limits come free.
+Identity Model
+
+    No names stored on the server.
+
+    Session creation is open. Server returns a 128-bit random token. Session lives at /s/<token>/.
+
+    Session control (view, stop) requires the token.
+
+    Session listing shows active sessions by ID, simulation type, and optional label. No owner.
+
+    OPC UA per-session secret: random string generated with the session, shown on the session page, used by CODESYS. Not a person.
+
+    Optional session label: free-text field the user can fill in when creating a session. Not an identifier.
+
+    Display name (if any) is client-side only, stored in a browser cookie. Never persisted server-side.
+
+    Event log records session lifecycle events with no personal data.
+
+Data Model
+Model	Purpose	Notes
+Session	One simulation session	UUID, token, port, PID, simulation_id, status, config, optional label, timestamps
+SimulationCatalog	Available plugin types	Populated at deploy time from the registry
+SessionEvent	Append-only lifecycle log	session_id, event, detail (JSON), occurred_at. No PII.
+
+No user model. No auth tables. No IP storage.
+
+Retention: SessionEvent purged after 30 days by default. Configurable.
+Build Plan
+
+Six phases. Each ends with something demoable.
+Phase 1 — Worker process
+
+Deliverable: a single simulation session runs end-to-end from the command line.
+
+    worker_pool/worker/main.py — registry load, adapter, HTTP dashboard, heartbeat, SIGTERM
+
+    sim_runtime/http_adapter.py — dashboard + /api/state
+
+    sim_runtime/shell.html — generic polling shell
+
+    CIP plugin refactor into sim_plugins/cip/
+
+    Per-session OPC UA shared secret (username + password), anonymous disabled
+
+Demo: start a worker manually, connect CODESYS, watch the dashboard update.
+Phase 2 — Worker pool daemon
+
+Deliverable: daemon spawns, tracks, kills workers on command.
+
+    worker_pool/manager.py — systemd-run --scope wrapper
+
+    worker_pool/redis_bridge.py — Streams consumer group with XACK
+
+    worker_pool/daemon.py — wiring, reconciliation, health monitor
+
+    Integration tests: spawn, stop, crash, reconcile
+
+Demo: publish a command to Redis, watch a worker appear; publish stop, watch it disappear.
+Phase 3 — Control plane
+
+Deliverable: sessions can be created, listed, and stopped via web UI.
+
+    Settings split (base/dev/prod)
+
+    Models: Session, SimulationCatalog, SessionEvent
+
+    REST API: POST /api/sessions, GET /api/sessions, DELETE /api/sessions/<token>
+
+    Channels consumer for event stream
+
+    Orchestrator: HTTP → Redis → DB
+
+    Global active-session cap
+
+Demo: open the page, click "New CIP session," get the URL and OPC UA credentials, click stop.
+Phase 4 — Browser dashboard
+
+Deliverable: per-session live view.
+
+    Per-session WebSocket endpoint at /s/<token>/ws
+
+    UI broadcast at 4 Hz (physics runs at 10 Hz)
+
+    CIP-specific ui.html with the SVG diagram
+
+    Session listing page
+
+Demo: open two sessions in two tabs, drive one PLC, watch the matching dashboard respond.
+Phase 5 — Deployment
+
+Deliverable: one install.sh on a fresh Ubuntu 22.04.
+
+    systemd units for control plane and daemon
+
+    Postgres and Redis setup
+
+    UFW rules scoped to the intranet
+
+    deploy.sh for updates
+
+    README with a 1-page quickstart
+
+Demo: fresh VM, one command, platform is up.
+Phase 6 — Hardening
+
+Deliverable: deployable on a semi-trusted network.
+
+    Bind workers to the lab interface only
+
+    Global rate limit on active sessions
+
+    Django check --deploy passes
+
+    SessionEvent covers every state transition
+
+Demo: security review against the threat model.
+Workstreams
+
+Four parallel tracks once Phase 1 lands.
+|Track| |Owns   	   | |Depends on                                                                        | 
+|A —     Worker runtime	  worker_pool/worker/, sim_runtime/	Phase 1 done
+|B —     Orchestration	  worker_pool/daemon.py, manager.py, redis_bridge.py	Track A's worker interface
+|C —     Control plane	  Django app, models, API, Channels	Track B's event schema
+|D —     Plugins & UI	  sim_plugins/cip/, sim_plugins/blinker/, dashboards	sim_runtime/base.py (frozen)
+
+Decisions for the Kickoff
+
+    Scope of v1. One CIP simulation, multiple students. Platform architecture is proven by blinker; additional simulations are v2.
+
+    Deployment target. Any Ubuntu 22.04 box on the intranet.
+
+    Instructor access to session listing. Options: (a) no distinction, everyone sees everything; (b) single shared service password in /etc/cip-sim/env; (c) network-based, listing served only to a configured subnet. Recommend (a) for v1.
+
+    Roles. Each teammate claims a track.
+
+Risks
+Risk                                        	    Mitigation
+CODESYS OPC UA client config is fiddly	            Verify with a real PLC in Phase 1, not Phase 6
+Redis Streams redelivery semantics surprise us	    Integration test at-least-once with kill-restart cycle
+systemd-run permissions on the deploy target	    Test on the actual server early
+Session URL leaks → anyone can stop that session	Per-session tokens limit blast radius; users create new sessions freely
+Session creation abuse → resource exhaustion	    Global active-session cap
+No attribution → hard to investigate incidents	    Accepted trade-off. Upgrade path: pseudonymous per-browser token if needed.
+
+Acceptance Criteria (v1 ships)
+
+    Anyone who can reach the server can create a session and receive its URL and OPC UA credentials
+
+    A student can connect a CODESYS PLC using the credentials shown on the session page
+
+    Anyone with the session URL can view the live dashboard and stop the session
+
+    Anyone can view a listing of active sessions (IDs, simulation type, optional label)
+
+    Stopping a session cleans up the worker, the port, and the DB row
+
+    Killing the daemon and restarting it re-adopts live sessions
+
+    Deploys to a fresh Ubuntu 22.04 with one command
+
+    Session event log shows every state transition with no personal data
