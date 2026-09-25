@@ -1,60 +1,76 @@
-"""OPC UA Aggregation Gateway.
+"""OPC UA Aggregation Gateway entrypoint.
 
-Exposes a single OPC UA endpoint on a whitelisted port. Internally connects
-to every running worker as a client, mirrors its schema under a session
-folder, and proxies reads/writes/subscriptions.
+Exposes one OPC UA endpoint on a whitelisted port. Internally connects to
+each running worker as a client, mirrors its schema under a session folder,
+and proxies reads/writes through subscriptions and value setters.
 
-Configuration comes from Redis: the set of active sessions and their ports
-is published by the daemon. The gateway subscribes to session lifecycle
-events and connects/disconnects workers dynamically.
+The gateway reads session lifecycle events from the Redis events stream.
+When a session becomes ready, a WorkerMirror connects and mirrors it. When
+a session stops, the mirror is torn down.
 """
 
 from __future__ import annotations
 
-import asyncio
 import argparse
+import asyncio
 import os
+import signal
 import sys
 
 import redis.asyncio as aioredis
-from asyncua import Server, ua
 
-from shared.constants import (
-    GATEWAY_OPCUA_PORT,
-    REDIS_EVT_STREAM,
-    REDIS_STREAM_EVT_GROUP,
-)
+from gateway.server import Gateway
+from shared.constants import GATEWAY_OPCUA_PORT
 from shared.logging import configure_logging, get_logger
-from shared.schemas import parse_event, SessionStartedEvent, SessionStoppedEvent
+
 
 log = get_logger(__name__)
 
 
-async def _main(args: argparse.Namespace) -> int:
+async def _run(args: argparse.Namespace) -> int:
     redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
     r = aioredis.from_url(redis_url, decode_responses=True)
 
     gateway = Gateway(
-        host=args.host,
+        advertise_host=args.advertise_host,
         port=args.port,
         redis=r,
-        advertise_host=args.advertise_host,
     )
+
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, stop.set)
+
     await gateway.start()
 
-    # Consume session lifecycle events from Redis and connect/disconnect.
-    await gateway.run_event_loop()
+    failed = False
+    try:
+        await gateway.run_event_loop(stop)
+    except Exception:
+        log.exception("gateway event loop failed")
+        failed = True
+    finally:
+        await gateway.stop()
+        try:
+            await r.aclose()
+        except Exception:
+            pass
+
+    return 1 if failed else 0
 
 
 def main() -> int:
     configure_logging(os.environ.get("LOG_LEVEL", "INFO"))
     p = argparse.ArgumentParser(description="OPC UA Aggregation Gateway")
-    p.add_argument("--host", default="0.0.0.0")
-    p.add_argument("--port", type=int, default=GATEWAY_OPCUA_PORT)
     p.add_argument("--advertise-host", required=True,
-                   help="Host/IP the gateway advertises to clients (e.g. 10.120.32.67).")
+                   help="Host/IP the gateway advertises (e.g. 10.120.32.67)")
+    p.add_argument("--port", type=int, default=GATEWAY_OPCUA_PORT)
     args = p.parse_args()
-    return asyncio.run(_main(args))
+    try:
+        return asyncio.run(_run(args))
+    except KeyboardInterrupt:
+        return 0
 
 
 if __name__ == "__main__":
