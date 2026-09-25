@@ -63,6 +63,13 @@ RECONCILE_INTERVAL: Final[int] = _int_env("RECONCILE_INTERVAL", 15)
 PHYSICS_HZ: Final[int] = _int_env("PHYSICS_HZ", 10)
 UI_BROADCAST_HZ: Final[int] = _int_env("UI_BROADCAST_HZ", 4)
 
+# --- Gateway ---------------------------------------------------------------
+#The gateway reads the session event stream (cip:evt). When 
+#a SessionReadyEvent arrives, it connects to the worker. When 
+#SessionStoppedEvent or SessionFailedEvent arrives, it disconnects.
+GATEWAY_OPCUA_PORT: Final[int] = _int_env("GATEWAY_OPCUA_PORT", 8080)
+REDIS_STREAM_EVT_GROUP: Final[str] = "gateway"
+
 
 # --- systemd integration ---------------------------------------------------
 # Workers are transient systemd units so the daemon can rediscover them after
