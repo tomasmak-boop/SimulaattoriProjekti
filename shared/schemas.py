@@ -80,6 +80,7 @@ class SessionReadyEvent(_EventBase):
 
     kind: Literal["session_ready"] = "session_ready"
     session_id: str
+    simulation_id: str
     port: int
     pid: int
 

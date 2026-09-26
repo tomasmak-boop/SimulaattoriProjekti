@@ -10,6 +10,21 @@ from __future__ import annotations
 import os
 from typing import Final
 
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
+
+
+class _StrictBase(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class _CommandBase(_StrictBase):
+    request_id: str = Field(description="Echoed back in the resulting event.")
+    issued_at: datetime = Field(default_factory=_now)
+
+
+class _EventBase(_StrictBase):
+    occurred_at: datetime = Field(default_factory=_now)
+
 
 def _int_env(name: str, default: int) -> int:
     raw = os.environ.get(name)

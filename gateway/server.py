@@ -165,8 +165,6 @@ class Gateway:
                 simulation_id=sim_id,
                 port=int(port),
                 pid=int(pid),
-                systemd_unit=f"cip-worker-{session_id}",
-                advertised_endpoint="",
             )
             await self._add_mirror(ev)
             seen.append(session_id)

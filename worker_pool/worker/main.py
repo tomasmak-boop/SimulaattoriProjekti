@@ -242,6 +242,7 @@ async def _run(args: argparse.Namespace) -> int:
     try:
         ready = SessionReadyEvent(
             session_id=args.session_id,
+            simulation_id=args.simulation_id,
             port=args.opcua_port,
             pid=os.getpid(),
         )
