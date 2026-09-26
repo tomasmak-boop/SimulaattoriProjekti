@@ -68,7 +68,7 @@ UI_BROADCAST_HZ: Final[int] = _int_env("UI_BROADCAST_HZ", 4)
 #a SessionReadyEvent arrives, it connects to the worker. When 
 #SessionStoppedEvent or SessionFailedEvent arrives, it disconnects.
 GATEWAY_OPCUA_PORT: Final[int] = _int_env("GATEWAY_OPCUA_PORT", 8080)
-REDIS_STREAM_EVT_GROUP: Final[str] = "gateway"
+GATEWAY_EVT_CONSUMER_GROUP: Final[str] = "gateway"
 
 
 # --- systemd integration ---------------------------------------------------
