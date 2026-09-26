@@ -44,6 +44,7 @@ async def _run(args: argparse.Namespace) -> int:
 
     await gateway.start()
 
+
     failed = False
     try:
         await gateway.run_event_loop(stop)
@@ -59,6 +60,17 @@ async def _run(args: argparse.Namespace) -> int:
 
     return 1 if failed else 0
 
+    await gateway.start()
+    await gateway.reconcile_existing()
+    
+    try:
+        await self._redis.xgroup_create(
+            REDIS_EVT_STREAM, GATEWAY_EVT_CONSUMER_GROUP,
+            id="0", mkstream=True,
+        )
+    except Exception as exc:
+        if "BUSYGROUP" not in str(exc):
+            raise
 
 def main() -> int:
     configure_logging(os.environ.get("LOG_LEVEL", "INFO"))
