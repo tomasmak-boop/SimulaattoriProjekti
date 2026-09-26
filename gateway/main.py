@@ -7,6 +7,9 @@ and proxies reads/writes through subscriptions and value setters.
 The gateway reads session lifecycle events from the Redis events stream.
 When a session becomes ready, a WorkerMirror connects and mirrors it. When
 a session stops, the mirror is torn down.
+
+On startup, the gateway reconciles against Redis heartbeats so it picks up
+workers that were already running before the gateway started.
 """
 
 from __future__ import annotations
@@ -42,9 +45,15 @@ async def _run(args: argparse.Namespace) -> int:
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop.set)
 
+    # 1. Start the OPC UA server.
     await gateway.start()
 
+    # 2. Pick up any workers that were already running before we started.
+    #    This makes the gateway restart-safe: it does not depend on having
+    #    seen the SessionReadyEvent, only on the worker's heartbeat.
+    await gateway.reconcile_existing()
 
+    # 3. Consume new events until signalled to stop.
     failed = False
     try:
         await gateway.run_event_loop(stop)
@@ -60,17 +69,6 @@ async def _run(args: argparse.Namespace) -> int:
 
     return 1 if failed else 0
 
-    await gateway.start()
-    await gateway.reconcile_existing()
-    
-    try:
-        await self._redis.xgroup_create(
-            REDIS_EVT_STREAM, GATEWAY_EVT_CONSUMER_GROUP,
-            id="0", mkstream=True,
-        )
-    except Exception as exc:
-        if "BUSYGROUP" not in str(exc):
-            raise
 
 def main() -> int:
     configure_logging(os.environ.get("LOG_LEVEL", "INFO"))

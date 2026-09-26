@@ -3,21 +3,32 @@
 Owns the aggregate address space. Each active session appears under
 Objects/Gateway/Sessions/<session_id>/. Mirrors are kept in a dict and
 updated as session events arrive.
+
+Two ways mirrors get added:
+
+  1. reconcile_existing() — at startup, scan Redis heartbeats. This is
+     the ground truth for "what workers are alive right now" and does not
+     depend on having seen the SessionReadyEvent.
+  2. run_event_loop() — consume the events stream for sessions that start
+     or stop while the gateway is running.
+
+Both paths converge on _add_mirror and _remove_mirror.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any, Callable
 
 import redis.asyncio as aioredis
 from asyncua import Server, ua
-from asyncua.common.utils import ServiceError
 
 from gateway.mirror import WorkerMirror
 from shared.constants import (
     GATEWAY_EVT_CONSUMER_GROUP,
     REDIS_EVT_STREAM,
+    REDIS_HEARTBEAT_PREFIX,
 )
 from shared.logging import get_logger
 from shared.schemas import (
@@ -50,9 +61,8 @@ class Gateway:
         self._mirrors: dict[str, WorkerMirror] = {}
         self._mirrors_lock = asyncio.Lock()
 
-        # Pending outbound writes to workers, drained by a background task.
-        # The setter callback is synchronous; enqueueing here decouples it
-        # from the async write to the worker.
+        # Pending outbound writes to workers. The setter callback is
+        # synchronous; enqueueing here decouples it from the async write.
         self._write_queue: asyncio.Queue[tuple[str, str, Any]] = asyncio.Queue()
         self._write_task: asyncio.Task | None = None
 
@@ -105,17 +115,73 @@ class Gateway:
                 log.exception("error disconnecting mirror",
                               extra={"session_id": m.session_id})
 
-        await self._server.stop()
+        try:
+            await self._server.stop()
+        except Exception:
+            log.exception("error stopping gateway server")
+
+    # --- startup reconciliation ---
+
+    async def reconcile_existing(self) -> None:
+        """Scan Redis heartbeats and mirror every live worker.
+
+        Called once at startup. This is the correct, restart-safe way to
+        rebuild state; the event stream only covers transitions that
+        happen while the gateway is running.
+        """
+        keys = await self._redis.keys(f"{REDIS_HEARTBEAT_PREFIX}*")
+        if not keys:
+            log.info("reconcile: no live sessions")
+            return
+
+        seen: list[str] = []
+        for key in keys:
+            session_id = key.split(":", 2)[-1]
+            hb_raw = await self._redis.get(key)
+            if not hb_raw:
+                continue
+            try:
+                hb = json.loads(hb_raw)
+            except Exception:
+                log.warning("reconcile: unparsable heartbeat",
+                            extra={"session_id": session_id})
+                continue
+
+            port = hb.get("port")
+            pid = hb.get("pid", 0)
+            if port is None:
+                continue
+
+            # Look up simulation_id from a small metadata key the worker
+            # pool is expected to write. Fall back to "cip" so the
+            # project still works before the daemon exists.
+            sim_id = await self._redis.get(f"cip:sim:{session_id}") or "cip"
+
+            ev = SessionReadyEvent(
+                session_id=session_id,
+                simulation_id=sim_id,
+                port=int(port),
+                pid=int(pid),
+                systemd_unit=f"cip-worker-{session_id}",
+                advertised_endpoint="",
+            )
+            await self._add_mirror(ev)
+            seen.append(session_id)
+
+        log.info("reconcile complete",
+                 extra={"sessions": seen, "count": len(seen)})
 
     # --- event loop ---
 
     async def run_event_loop(self, stop: asyncio.Event) -> None:
-        # Ensure the consumer group exists. MKSTREAM creates the stream
-        # if it doesn't exist yet.
+        # Create the consumer group starting from the beginning of the
+        # stream (id="0") so we don't miss events that arrived before we
+        # started. Combined with reconcile_existing this covers both the
+        # cold-start and restart cases.
         try:
             await self._redis.xgroup_create(
                 REDIS_EVT_STREAM, GATEWAY_EVT_CONSUMER_GROUP,
-                id="$", mkstream=True,
+                id="0", mkstream=True,
             )
         except Exception as exc:
             if "BUSYGROUP" not in str(exc):
@@ -145,7 +211,8 @@ class Gateway:
                     await self._handle_event(fields)
                     try:
                         await self._redis.xack(
-                            REDIS_EVT_STREAM, GATEWAY_EVT_CONSUMER_GROUP, msg_id,
+                            REDIS_EVT_STREAM, GATEWAY_EVT_CONSUMER_GROUP,
+                            msg_id,
                         )
                     except Exception:
                         log.exception("xack failed")
@@ -172,11 +239,11 @@ class Gateway:
             if ev.session_id in self._mirrors:
                 return
 
-        # The worker advertises a public endpoint, but the gateway is on the
-        # same host and can reach it on loopback. Use loopback regardless of
-        # what the worker advertises, because public ports may be blocked
-        # between the two processes too.
-        worker_endpoint = f"opc.tcp://127.0.0.1:{ev.port}/{ev.simulation_id}/"
+        # The gateway is on the same host as the workers, so it always
+        # connects via loopback regardless of what the worker advertises.
+        worker_endpoint = (
+            f"opc.tcp://127.0.0.1:{ev.port}/{ev.simulation_id}/"
+        )
 
         mirror = WorkerMirror(
             session_id=ev.session_id,
@@ -213,8 +280,9 @@ class Gateway:
 
     # --- write forwarding ---
 
-    def _enqueue_write(self, session_id: str, command_name: str, value: Any) -> None:
-        """Called from the sync OPC UA setter to queue a write to a worker."""
+    def _enqueue_write(
+        self, session_id: str, command_name: str, value: Any
+    ) -> None:
         self._write_queue.put_nowait((session_id, command_name, value))
 
     async def _drain_writes(self) -> None:
@@ -226,6 +294,7 @@ class Gateway:
             try:
                 await mirror.forward_command(command_name, value)
             except Exception:
-                log.exception("command forward failed",
-                              extra={"session_id": session_id,
-                                     "command": command_name})
+                log.exception(
+                    "command forward failed",
+                    extra={"session_id": session_id, "command": command_name},
+                )
