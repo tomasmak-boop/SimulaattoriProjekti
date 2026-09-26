@@ -3,6 +3,10 @@
 Every command and every event is one of these models. Django and the daemon
 import the same definitions, so a change on one side that isn't mirrored on
 the other fails at deserialization with a clear error.
+
+Base models use extra="forbid" so undeclared fields raise at construction
+time rather than being silently dropped. This catches drift between
+producers and consumers immediately.
 """
 
 from __future__ import annotations
@@ -10,18 +14,24 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Annotated, Any, Literal, Union
 
-from pydantic import BaseModel, Field, TypeAdapter, field_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+class _StrictBase(BaseModel):
+    """Base for all messages. Rejects undeclared fields loudly."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
 # ---------------------------------------------------------------------------
 # Commands: Django -> Worker Pool
 # ---------------------------------------------------------------------------
 
-class _CommandBase(BaseModel):
+class _CommandBase(_StrictBase):
     request_id: str = Field(description="Echoed back in the resulting event.")
     issued_at: datetime = Field(default_factory=_now)
 
@@ -54,7 +64,7 @@ class PingCommand(_CommandBase):
 # Events: Worker Pool -> Django
 # ---------------------------------------------------------------------------
 
-class _EventBase(BaseModel):
+class _EventBase(_StrictBase):
     occurred_at: datetime = Field(default_factory=_now)
 
 
@@ -72,11 +82,7 @@ class SessionStartedEvent(_EventBase):
 
 
 class SessionReadyEvent(_EventBase):
-    """Emitted by the worker itself once its OPC UA port is bound.
-
-    Distinct from SessionStartedEvent: the daemon knows it spawned a process,
-    only the worker knows when it is actually listening.
-    """
+    """Emitted by the worker itself once its OPC UA port is bound."""
 
     kind: Literal["session_ready"] = "session_ready"
     session_id: str
