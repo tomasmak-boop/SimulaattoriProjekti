@@ -123,6 +123,9 @@ class Gateway:
     # --- startup reconciliation ---
 
     async def reconcile_existing(self) -> None:
+        log.info("reconcile: starting")
+        keys = await self._redis.keys(f"{REDIS_HEARTBEAT_PREFIX}*")
+        log.info("reconcile: scanned keys", extra={"count": len(keys)})
         """Scan Redis heartbeats and mirror every live worker.
 
         Called once at startup. This is the correct, restart-safe way to
