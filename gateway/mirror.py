@@ -4,6 +4,10 @@ Reads the worker's schema once at connect time to build a mirrored subtree
 under the session folder. Subscribes to the worker's measurement and status
 nodes so gateway values stay current. Command nodes get a setter that
 forwards writes back to the worker through the gateway's write queue.
+
+Values are always written with an explicit Variant type. Without this,
+asyncua guesses the type from the Python value and can pick a wider
+integer (Int64) than the node was declared with, causing BadTypeMismatch.
 """
 
 from __future__ import annotations
@@ -19,33 +23,51 @@ from shared.logging import get_logger
 log = get_logger(__name__)
 
 
-# Map from OPC UA DataType NodeId to VariantType. Covers the types our
-# plugins use today. Extend as new plugins need new types.
-_VARIANT_BY_NODEID: dict[str, ua.VariantType] = {
-    "i=1": ua.VariantType.Boolean,
-    "i=3": ua.VariantType.Int16,
-    "i=4": ua.VariantType.UInt16,
-    "i=5": ua.VariantType.Int32,
-    "i=6": ua.VariantType.UInt32,
-    "i=7": ua.VariantType.Int64,
-    "i=8": ua.VariantType.UInt64,
-    "i=10": ua.VariantType.Float,
-    "i=11": ua.VariantType.Double,
-    "i=12": ua.VariantType.String,
-}
-
-# Namespace prefix for the simulation plugins. When a worker is CIP, its
-# root node lives under this URI. When it's blinker, a different one.
 _SIM_NAMESPACES = {
     "cip": "urn:cip-sim:cip:2.0.0",
     "blinker": "urn:cip-sim:blinker:1.0.0",
 }
 
-# Human-readable folder name each plugin registers under Objects.
 _SIM_FOLDER_NAMES = {
     "cip": "Clean-In-Place",
     "blinker": "Blinking Light",
 }
+
+
+def _coerce_value(value: Any, variant_type: ua.VariantType) -> Any:
+    """Coerce a Python value to match a target OPC UA variant type."""
+    if variant_type == ua.VariantType.Boolean:
+        return bool(value)
+    if variant_type in (ua.VariantType.Int16,
+                        ua.VariantType.Int32,
+                        ua.VariantType.Int64):
+        return int(value)
+    if variant_type in (ua.VariantType.UInt16,
+                        ua.VariantType.UInt32,
+                        ua.VariantType.UInt64):
+        v = int(value)
+        return v if v >= 0 else 0
+    if variant_type in (ua.VariantType.Float, ua.VariantType.Double):
+        return float(value)
+    if variant_type == ua.VariantType.String:
+        return str(value)
+    return value
+
+
+def _default_for(variant_type: ua.VariantType) -> Any:
+    if variant_type == ua.VariantType.Boolean:
+        return False
+    if variant_type in (ua.VariantType.Int16, ua.VariantType.Int32,
+                        ua.VariantType.Int64):
+        return 0
+    if variant_type in (ua.VariantType.UInt16, ua.VariantType.UInt32,
+                        ua.VariantType.UInt64):
+        return 0
+    if variant_type in (ua.VariantType.Float, ua.VariantType.Double):
+        return 0.0
+    if variant_type == ua.VariantType.String:
+        return ""
+    return None
 
 
 class WorkerMirror:
@@ -72,9 +94,8 @@ class WorkerMirror:
         self._session_folder: Node | None = None
         self._subscription = None
 
-        # Map of worker NodeId -> gateway Node, per folder, so the
-        # subscription handler can find the gateway node to update.
-        self._worker_to_gateway: dict[str, Node] = {}
+        # worker NodeId (as string) -> (gateway Node, target VariantType)
+        self._map: dict[str, tuple[Node, ua.VariantType]] = {}
 
     # --- lifecycle ---
 
@@ -91,7 +112,6 @@ class WorkerMirror:
             ua.QualifiedName(self.session_id, ns),
         )
 
-        # Find the simulation's root folder in the worker
         worker_ns = await self._client.get_namespace_index(
             _SIM_NAMESPACES[self.simulation_id]
         )
@@ -102,9 +122,7 @@ class WorkerMirror:
 
         for folder_name in ("Commands", "Measurements", "Status"):
             try:
-                await self._mirror_folder(
-                    worker_root, folder_name, worker_ns
-                )
+                await self._mirror_folder(worker_root, folder_name, worker_ns)
             except Exception:
                 log.exception("failed to mirror folder",
                               extra={"folder": folder_name,
@@ -150,11 +168,17 @@ class WorkerMirror:
         self, worker_node: Node, gateway_folder: Node, folder_name: str
     ) -> None:
         name = (await worker_node.read_browse_name()).Name
-        dtype_nodeid = await worker_node.read_data_type_as_variant_type()
-        variant_type = dtype_nodeid  # asyncua returns VariantType directly here
 
         try:
-            value = await worker_node.read_value()
+            variant_type = await worker_node.read_data_type_as_variant_type()
+        except Exception:
+            log.warning("could not read data type; assuming Double",
+                        extra={"session_id": self.session_id, "name": name})
+            variant_type = ua.VariantType.Double
+
+        try:
+            raw_value = await worker_node.read_value()
+            value = _coerce_value(raw_value, variant_type)
         except Exception:
             value = _default_for(variant_type)
 
@@ -170,10 +194,10 @@ class WorkerMirror:
         )
         await gateway_node.set_writable()
 
-        # Track for subscription handler
-        self._worker_to_gateway[worker_node.nodeid.to_string()] = gateway_node
+        # Track (gateway node, variant type) for the subscription handler
+        self._map[worker_node.nodeid.to_string()] = (gateway_node, variant_type)
 
-        # Commands are writable in the gateway and forwarded to the worker.
+        # Commands: wire up a proxy setter that forwards writes to the worker
         if folder_name == "Commands":
             self._server.set_attribute_value_setter(
                 gateway_node.nodeid,
@@ -188,10 +212,6 @@ class WorkerMirror:
             if value is None or value.Value is None:
                 return
             raw = value.Value.Value
-            # Accept the write immediately (client sees success), then
-            # forward asynchronously. Eventual consistency is acceptable
-            # for commands; the physics will reflect the change within a
-            # tick or two.
             node_data.attributes[attribute].value = value
             enqueue(session_id, name, raw)
 
@@ -200,17 +220,14 @@ class WorkerMirror:
     # --- subscription ---
 
     async def _start_subscription(self) -> None:
-        if self._client is None:
+        if self._client is None or not self._map:
             return
 
-        handler = _MirrorSubscriptionHandler(
-            worker_to_gateway=self._worker_to_gateway,
-        )
+        handler = _MirrorSubscriptionHandler(self._map)
         self._subscription = await self._client.create_subscription(500, handler)
 
         worker_nodes = [
-            self._client.get_node(nid_str)
-            for nid_str in self._worker_to_gateway.keys()
+            self._client.get_node(nid_str) for nid_str in self._map.keys()
         ]
         if worker_nodes:
             await self._subscription.subscribe_data_change(worker_nodes)
@@ -218,7 +235,6 @@ class WorkerMirror:
     # --- command forwarding ---
 
     async def forward_command(self, name: str, value: Any) -> None:
-        """Write a command to the worker's corresponding node."""
         if self._client is None:
             return
 
@@ -235,46 +251,44 @@ class WorkerMirror:
         ])
 
         variant_type = await node.read_data_type_as_variant_type()
-        await node.write_value(ua.Variant(value, variant_type))
+        coerced = _coerce_value(value, variant_type)
+        await node.write_value(ua.Variant(coerced, variant_type))
 
 
 class _MirrorSubscriptionHandler:
-    """Handle datachange from worker, push new value into gateway node."""
+    """Push worker value changes into the corresponding gateway node.
 
-    def __init__(self, worker_to_gateway: dict[str, Node]) -> None:
-        self._map = worker_to_gateway
+    The handler runs on the client's event loop thread. Writing to the
+    gateway node must happen on the same loop; scheduling a task is enough.
+    """
+
+    def __init__(
+        self, mapping: dict[str, tuple[Node, ua.VariantType]]
+    ) -> None:
+        self._map = mapping
 
     def datachange_notification(self, node: Node, val: Any, data) -> None:
-        gateway_node = self._map.get(node.nodeid.to_string())
-        if gateway_node is None:
+        entry = self._map.get(node.nodeid.to_string())
+        if entry is None:
             return
-        # The handler is called synchronously inside the client's event
-        # loop. Schedule the gateway write as a task.
+        gateway_node, variant_type = entry
+
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
-        loop.create_task(_safe_write(gateway_node, val))
+
+        coerced = _coerce_value(val, variant_type)
+        loop.create_task(_safe_write(gateway_node, coerced, variant_type))
 
 
-async def _safe_write(node: Node, value: Any) -> None:
+async def _safe_write(
+    node: Node, value: Any, variant_type: ua.VariantType
+) -> None:
     try:
-        await node.write_value(value)
+        await node.write_value(ua.Variant(value, variant_type))
     except Exception:
-        log.exception("mirror value update failed")
-
-
-def _default_for(variant_type: ua.VariantType) -> Any:
-    if variant_type == ua.VariantType.Boolean:
-        return False
-    if variant_type in (ua.VariantType.Int16, ua.VariantType.Int32,
-                        ua.VariantType.Int64):
-        return 0
-    if variant_type in (ua.VariantType.UInt16, ua.VariantType.UInt32,
-                        ua.VariantType.UInt64):
-        return 0
-    if variant_type in (ua.VariantType.Float, ua.VariantType.Double):
-        return 0.0
-    if variant_type == ua.VariantType.String:
-        return ""
-    return None
+        # Log once per failure without a full traceback: these are noisy
+        # and usually indicate a type mismatch we've already handled.
+        log.warning("mirror value update skipped",
+                    extra={"variant_type": str(variant_type)})
