@@ -4,12 +4,6 @@ Reads every value from the environment so the same code runs in dev,
 test, and production without changes. The only files that differ
 between environments are dev.py and prod.py, and each overrides just a
 handful of variables.
-
-There is no custom user model. The project stores no personal data.
-Sessions are identified by random capability tokens, not by accounts.
-Django's auth app remains installed only because a few pieces of
-default middleware expect it to be importable; no users are ever
-created and the admin site is not enabled.
 """
 
 from __future__ import annotations
@@ -25,12 +19,6 @@ from shared.logging import JSONFormatter
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-REDIS_URL = _env("REDIS_URL", "redis://localhost:6379/0")
-
-# Public hostname (host:port or just host) that CODESYS uses to reach
-# the gateway. Displayed to users so they can copy the endpoint into
-# their PLC project.
-GATEWAY_PUBLIC_HOST = _env("GATEWAY_PUBLIC_HOST", "")
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
@@ -58,6 +46,8 @@ def _env_list(name: str, default: str = "") -> list[str]:
 # Core
 # ---------------------------------------------------------------------------
 
+REDIS_URL = _env("REDIS_URL", "redis://localhost:6379/0")
+GATEWAY_PUBLIC_HOST = _env("GATEWAY_PUBLIC_HOST", "")
 SECRET_KEY = _env("DJANGO_SECRET_KEY", "dev-insecure-change-me")
 DEBUG = _env_bool("DJANGO_DEBUG", False)
 ALLOWED_HOSTS = _env_list("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1")
