@@ -1,24 +1,22 @@
 """REST API for session management.
 
 Every endpoint is public. Access to a specific session is gated by the
-capability token in the URL, not by authentication. This is the design
-choice recorded in the project plan: no accounts, no personal data.
+capability token in the URL.
 
 Endpoints:
 
-    GET    /api/simulations/          list available simulations
-    GET    /api/sessions/             list active sessions (no tokens)
-    POST   /api/sessions/             create a session
-    GET    /api/sessions/<token>/     session detail (token required)
-    DELETE /api/sessions/<token>/     stop a session (token required)
-    GET    /api/sessions/<token>/events/   session event log
+    GET    /api/simulations/                list available simulations
+    GET    /api/sessions/                   list active sessions (no tokens)
+    POST   /api/sessions/                   create a session
+    GET    /api/sessions/<token>/           session detail (token required)
+    DELETE /api/sessions/<token>/           stop a session (token required)
+    GET    /api/sessions/<token>/events/    session event log
 """
 
 from __future__ import annotations
 
 from django.conf import settings
 from django.shortcuts import get_object_or_404
-from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -54,11 +52,17 @@ def list_simulations(request):  # noqa: ARG001
 
 
 # ---------------------------------------------------------------------------
-# Sessions
+# Sessions collection (GET list, POST create)
 # ---------------------------------------------------------------------------
 
-@api_view(["GET"])
-def list_sessions(request):  # noqa: ARG001
+@api_view(["GET", "POST"])
+def sessions_collection(request):
+    if request.method == "GET":
+        return _list_sessions(request)
+    return _create_session(request)
+
+
+def _list_sessions(request):
     """Active sessions, safe to show to anyone.
 
     Only sessions that are not in a terminal state by default. Pass
@@ -75,8 +79,7 @@ def list_sessions(request):  # noqa: ARG001
     return Response(SessionSummarySerializer(qs, many=True).data)
 
 
-@api_view(["POST"])
-def create_session(request):
+def _create_session(request):
     """Create a session and ask the daemon to start it.
 
     Returns the full session record including the capability token.
@@ -120,6 +123,10 @@ def create_session(request):
     )
 
 
+# ---------------------------------------------------------------------------
+# Session detail (GET, DELETE)
+# ---------------------------------------------------------------------------
+
 @api_view(["GET", "DELETE"])
 def session_detail(request, token: str):
     """Get or stop one session. Requires the capability token."""
@@ -155,6 +162,10 @@ def session_detail(request, token: str):
         SessionDetailSerializer(session, context=_ctx(request)).data
     )
 
+
+# ---------------------------------------------------------------------------
+# Session events
+# ---------------------------------------------------------------------------
 
 @api_view(["GET"])
 def session_events(request, token: str):
