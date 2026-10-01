@@ -25,6 +25,12 @@ from shared.logging import JSONFormatter
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
+REDIS_URL = _env("REDIS_URL", "redis://localhost:6379/0")
+
+# Public hostname (host:port or just host) that CODESYS uses to reach
+# the gateway. Displayed to users so they can copy the endpoint into
+# their PLC project.
+GATEWAY_PUBLIC_HOST = _env("GATEWAY_PUBLIC_HOST", "")
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
