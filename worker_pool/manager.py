@@ -154,7 +154,7 @@ class WorkerPoolManager:
                     f"worker for {session_id!r} is already tracked"
                 )
 
-        port = self._allocator.acquire(session_id)
+        port = await self._allocator.acquire(session_id)
 
         try:
             proc = await self._spawn_process(
@@ -164,7 +164,7 @@ class WorkerPoolManager:
                 config_params=config_params or {},
             )
         except Exception:
-            self._allocator.release(port, session_id)
+            await self._allocator.release(port, session_id)
             raise
 
         record = SpawnedWorker(
@@ -181,7 +181,7 @@ class WorkerPoolManager:
         # bad args, missing plugin, or port conflict.
         await asyncio.sleep(_STARTUP_LIVENESS_CHECK)
         if proc.returncode is not None:
-            self._allocator.release(port, session_id)
+            await self._allocator.release(port, session_id)
             raise WorkerStartupError(
                 f"worker for {session_id!r} exited during startup "
                 f"with code {proc.returncode}"
@@ -250,7 +250,7 @@ class WorkerPoolManager:
             return False
 
         await self._terminate(record)
-        self._allocator.release(record.port, session_id)
+        await self._allocator.release(record.port, session_id)
 
         async with self._lock:
             self._workers.pop(session_id, None)
@@ -318,7 +318,7 @@ class WorkerPoolManager:
                 "pid": record.pid,
                 "port": record.port,
             })
-            self._allocator.release(record.port, record.session_id)
+            await self._allocator.release(record.port, record.session_id)
             async with self._lock:
                 self._workers.pop(record.session_id, None)
             task = self._log_tasks.pop(record.session_id, None)
@@ -370,7 +370,7 @@ class WorkerPoolManager:
             adopted.append(session_id)
 
         # Drop stale port leases whose session no longer exists.
-        self._allocator.reconcile(set(adopted))
+        await self._allocator.reconcile(set(adopted))
 
         log.info("startup reconciliation", extra={
             "adopted": len(adopted),

@@ -63,7 +63,7 @@ async def main() -> int:
     print("== verify cleanup ==")
     print("   tracked:", mgr.active_sessions())
     print("   heartbeat:", await r.get("cip:hb:test1"))
-    print("   ports leased:", allocator.snapshot())
+    print("   ports leased:", await allocator.snapshot())
 
     await r.aclose()
     print()
