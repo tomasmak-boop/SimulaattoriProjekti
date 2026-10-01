@@ -123,16 +123,20 @@ class Gateway:
     # --- startup reconciliation ---
 
     async def reconcile_existing(self) -> None:
-        log.info("reconcile: starting")
-        keys = await self._redis.keys(f"{REDIS_HEARTBEAT_PREFIX}*")
-        log.info("reconcile: scanned keys", extra={"count": len(keys)})
         """Scan Redis heartbeats and mirror every live worker.
 
         Called once at startup. This is the correct, restart-safe way to
         rebuild state; the event stream only covers transitions that
         happen while the gateway is running.
+
+        Reads simulation_id from the heartbeat payload. Workers write it
+        there on every heartbeat, so a session created before the
+        gateway started is still discoverable.
         """
+        log.info("reconcile: starting")
         keys = await self._redis.keys(f"{REDIS_HEARTBEAT_PREFIX}*")
+        log.info("reconcile: scanned keys", extra={"count": len(keys)})
+
         if not keys:
             log.info("reconcile: no live sessions")
             return
@@ -152,17 +156,17 @@ class Gateway:
 
             port = hb.get("port")
             pid = hb.get("pid", 0)
-            if port is None:
+            sim_id = hb.get("simulation_id")
+            if port is None or not sim_id:
+                log.warning(
+                    "reconcile: heartbeat missing port or simulation_id",
+                    extra={"session_id": session_id},
+                )
                 continue
-
-            # Look up simulation_id from a small metadata key the worker
-            # pool is expected to write. Fall back to "cip" so the
-            # project still works before the daemon exists.
-            sim_id = await self._redis.get(f"cip:sim:{session_id}") or "cip"
 
             ev = SessionReadyEvent(
                 session_id=session_id,
-                simulation_id=sim_id,
+                simulation_id=str(sim_id),
                 port=int(port),
                 pid=int(pid),
             )
@@ -266,7 +270,7 @@ class Gateway:
             log.exception("failed to mirror worker",
                           extra={"session_id": ev.session_id})
             return
-        
+
         async with self._mirrors_lock:
             self._mirrors[ev.session_id] = mirror
         log.info("mirror added", extra={"session_id": ev.session_id})

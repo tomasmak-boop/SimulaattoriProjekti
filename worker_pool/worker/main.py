@@ -9,18 +9,8 @@ One worker runs exactly one simulation session:
     5. Runs the OPC UA tick loop until SIGTERM
     6. Cleans up (heartbeat key, idle key, PID file) before exit
 
-Invoked by the daemon as a transient systemd unit, roughly:
-
-    systemd-run --unit=cip-worker-<sid> --scope \\
-        /opt/cip-sim/.venv/bin/python -m worker_pool.worker.main \\
-            --session-id <sid> \\
-            --simulation-id cip \\
-            --opcua-port 5003 \\
-            --http-port 6003 \\
-            --advertise-host 10.0.0.5 \\
-            --config '{"params": {}}'
-
-Can also be run by hand for development; see --help.
+Run by the daemon as a subprocess (see worker_pool/manager.py). Can also
+be run by hand for development; see --help.
 """
 
 from __future__ import annotations
@@ -101,6 +91,7 @@ async def _heartbeat_loop(
     r: aioredis.Redis,
     *,
     session_id: str,
+    simulation_id: str,
     port: int,
     adapter: OPCUAAdapter,
     stop: asyncio.Event,
@@ -111,6 +102,10 @@ async def _heartbeat_loop(
 
         cip:hb:<sid>    JSON heartbeat, refreshed every HEARTBEAT_INTERVAL
         cip:idle:<sid>  Unix timestamp of the last external OPC UA activity
+
+    The heartbeat payload includes simulation_id so the gateway can
+    discover what plugin a session is running when it reconciles on
+    startup, without needing a separate metadata key.
 
     The first heartbeat is written immediately so the worker is visible
     to the gateway and to reconciliation without an interval-long delay.
@@ -132,6 +127,7 @@ async def _heartbeat_loop(
         payload = json.dumps({
             "pid": os.getpid(),
             "port": port,
+            "simulation_id": simulation_id,
             "uptime": round(time.monotonic() - start_mono, 1),
             "requests": count,
         })
@@ -152,6 +148,7 @@ async def _heartbeat_loop(
         except asyncio.TimeoutError:
             pass
         await write_heartbeat()
+
 
 # ---------------------------------------------------------------------------
 # PID file
@@ -235,8 +232,6 @@ async def _run(args: argparse.Namespace) -> int:
     # Publish ready BEFORE the port is bound. The tiny race between this
     # event and the actual bind is acceptable: if bind fails a moment later,
     # the process exits non-zero and the daemon marks the session failed.
-    # Avoiding this race properly would require splitting adapter.run() into
-    # separate start/loop/stop phases; not worth the API churn right now.
     try:
         ready = SessionReadyEvent(
             session_id=args.session_id,
@@ -273,6 +268,7 @@ async def _run(args: argparse.Namespace) -> int:
                 _heartbeat_loop(
                     r,
                     session_id=args.session_id,
+                    simulation_id=args.simulation_id,
                     port=args.opcua_port,
                     adapter=adapter,
                     stop=stop,

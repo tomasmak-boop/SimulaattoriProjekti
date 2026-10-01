@@ -20,8 +20,7 @@ Run as a systemd service, or by hand for development:
     REDIS_URL=redis://localhost:6379/0 \\
     python -m worker_pool.daemon --advertise-host 10.0.0.5
 
-Configuration is read from the environment (shared.constants). See
-deploy/systemd/cip-worker-pool.service for the production invocation.
+Configuration is read from the environment (shared.constants).
 """
 
 from __future__ import annotations
@@ -36,7 +35,6 @@ import time
 import redis.asyncio as aioredis
 
 from shared.constants import (
-    RECONCILE_INTERVAL,
     REDIS_HEARTBEAT_PREFIX,
     WORKER_IDLE_TIMEOUT,
 )
@@ -50,9 +48,7 @@ from worker_pool.redis_bridge import RedisBridge
 log = get_logger(__name__)
 
 
-# How often to scan for dead workers and idle sessions. Distinct from
-# RECONCILE_INTERVAL, which is how often to reconcile port leases and
-# heartbeat state against what Redis currently holds.
+# How often to scan for dead workers and idle sessions.
 _REAP_INTERVAL_SEC = 5.0
 
 

@@ -1,14 +1,31 @@
-<div class="card">
-  <h2>Blinker state</h2>
-  <div class="kv"><span class="k">State</span><span class="v" id="s-state">--</span></div>
-  <div class="kv"><span class="k">On</span><span class="v" id="s-on">--</span></div>
-  <div class="kv"><span class="k">Phase</span><span class="v" id="s-phase">--</span></div>
-  <div class="kv"><span class="k">Blink count</span><span class="v" id="s-count">--</span></div>
-</div>
+/* Blinker dashboard renderer. Called by the shell on every poll.
+ *
+ * Reads measurements.On, measurements.Phase, status.State, and
+ * status.BlinkCount. Nothing else. No physics, no guessing.
+ */
+window.renderState = function (state) {
+  'use strict';
 
-<div class="card">
-  <h2>Light</h2>
-  <div id="light" style="width:100px;height:100px;border-radius:50%;
-       background:#cfd8dc;border:2px solid #90a4ae;margin:0 auto;
-       transition:background .12s;"></div>
-</div>
+  var m = state.measurements || {};
+  var s = state.status || {};
+
+  var stateEl = document.getElementById('s-state');
+  if (stateEl) stateEl.textContent = s.State != null ? s.State : '--';
+
+  var onEl = document.getElementById('s-on');
+  if (onEl) onEl.textContent = m.On ? 'yes' : 'no';
+
+  var phaseEl = document.getElementById('s-phase');
+  if (phaseEl) {
+    phaseEl.textContent =
+      (typeof m.Phase === 'number' ? m.Phase.toFixed(2) : '0.00') + ' s';
+  }
+
+  var countEl = document.getElementById('s-count');
+  if (countEl) countEl.textContent = s.BlinkCount != null ? s.BlinkCount : 0;
+
+  var light = document.getElementById('light');
+  if (light) {
+    light.style.background = m.On ? '#f5c518' : '#cfd8dc';
+  }
+};
