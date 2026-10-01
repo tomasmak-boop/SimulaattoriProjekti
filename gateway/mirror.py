@@ -5,9 +5,15 @@ under the session folder. Subscribes to the worker's measurement and status
 nodes so gateway values stay current. Command nodes get a setter that
 forwards writes back to the worker through the gateway's write queue.
 
-Values are always written with an explicit Variant type. Without this,
-asyncua guesses the type from the Python value and can pick a wider
-integer (Int64) than the node was declared with, causing BadTypeMismatch.
+The worker's root object exposes three self-describing properties that
+this mirror reads on connect:
+
+    SimulationId       e.g. "cip"
+    SimulationName     e.g. "Clean-In-Place"
+    NamespaceUri       e.g. "urn:cip-sim:cip:2.0.0"
+
+Reading these instead of keeping a hardcoded map means adding a new
+plugin to the project requires no changes to the gateway.
 """
 
 from __future__ import annotations
@@ -21,17 +27,6 @@ from shared.logging import get_logger
 
 
 log = get_logger(__name__)
-
-
-_SIM_NAMESPACES = {
-    "cip": "urn:cip-sim:cip:2.0.0",
-    "blinker": "urn:cip-sim:blinker:1.0.0",
-}
-
-_SIM_FOLDER_NAMES = {
-    "cip": "Clean-In-Place",
-    "blinker": "Blinking Light",
-}
 
 
 def _coerce_value(value: Any, variant_type: ua.VariantType) -> Any:
@@ -70,6 +65,10 @@ def _default_for(variant_type: ua.VariantType) -> Any:
     return None
 
 
+class SimulationRootNotFound(RuntimeError):
+    """Raised when a worker has no node carrying the SimulationId property."""
+
+
 class WorkerMirror:
     def __init__(
         self,
@@ -94,6 +93,11 @@ class WorkerMirror:
         self._session_folder: Node | None = None
         self._subscription = None
 
+        # Discovered on connect.
+        self._worker_ns: int = 0
+        self._worker_ns_uri: str = ""
+        self._worker_root: Node | None = None
+
         # worker NodeId (as string) -> (gateway Node, target VariantType)
         self._map: dict[str, tuple[Node, ua.VariantType]] = {}
 
@@ -106,29 +110,79 @@ class WorkerMirror:
             "session_id": self.session_id, "endpoint": self.worker_endpoint,
         })
 
+        # Discover the simulation root by looking for a node with a
+        # SimulationId property. No hardcoded namespace or folder name.
+        self._worker_root, self._worker_ns_uri = (
+            await self._discover_simulation_root()
+        )
+        try:
+            self._worker_ns = await self._client.get_namespace_index(
+                self._worker_ns_uri
+            )
+        except Exception as exc:
+            raise SimulationRootNotFound(
+                f"worker namespace {self._worker_ns_uri!r} not registered "
+                f"on client side"
+            ) from exc
+
+        log.info("discovered simulation root", extra={
+            "session_id": self.session_id,
+            "namespace": self._worker_ns_uri,
+        })
+
         ns = self._namespace_idx
         self._session_folder = await self._parent_folder.add_folder(
             ua.NodeId(f"Gateway.Sessions.{self.session_id}", ns),
             ua.QualifiedName(self.session_id, ns),
         )
 
-        worker_ns = await self._client.get_namespace_index(
-            _SIM_NAMESPACES[self.simulation_id]
-        )
-        worker_folder_name = _SIM_FOLDER_NAMES[self.simulation_id]
-        worker_root = await self._client.nodes.root.get_child([
-            "0:Objects", f"{worker_ns}:{worker_folder_name}",
-        ])
-
         for folder_name in ("Commands", "Measurements", "Status"):
             try:
-                await self._mirror_folder(worker_root, folder_name, worker_ns)
+                await self._mirror_folder(folder_name)
             except Exception:
                 log.exception("failed to mirror folder",
                               extra={"folder": folder_name,
                                      "session_id": self.session_id})
 
         await self._start_subscription()
+
+    async def _discover_simulation_root(self) -> tuple[Node, str]:
+        """Return (root_node, namespace_uri) by reading a SimulationId property.
+
+        Walks the worker's Objects folder. Any child that has a property
+        named SimulationId is treated as a simulation root. Reads the
+        NamespaceUri property from the same node.
+        """
+        if self._client is None:
+            raise SimulationRootNotFound("client not connected")
+
+        objects = self._client.nodes.objects
+        children = await objects.get_children()
+        for child in children:
+            try:
+                props = await child.get_properties()
+            except Exception:
+                continue
+            prop_map: dict[str, Any] = {}
+            for prop in props:
+                try:
+                    name = (await prop.read_browse_name()).Name
+                    value = await prop.read_value()
+                    prop_map[name] = value
+                except Exception:
+                    continue
+            if "SimulationId" not in prop_map:
+                continue
+            ns_uri = prop_map.get("NamespaceUri")
+            if not isinstance(ns_uri, str) or not ns_uri:
+                raise SimulationRootNotFound(
+                    f"root {prop_map['SimulationId']!r} has no NamespaceUri"
+                )
+            return child, ns_uri
+
+        raise SimulationRootNotFound(
+            "no node with SimulationId property found under Objects"
+        )
 
     async def disconnect(self) -> None:
         if self._subscription is not None:
@@ -146,10 +200,11 @@ class WorkerMirror:
 
     # --- mirroring ---
 
-    async def _mirror_folder(
-        self, worker_root: Node, folder_name: str, worker_ns: int
-    ) -> None:
-        worker_folder = await worker_root.get_child([f"{worker_ns}:{folder_name}"])
+    async def _mirror_folder(self, folder_name: str) -> None:
+        worker_ns = self._worker_ns
+        worker_folder = await self._worker_root.get_child(
+            [f"{worker_ns}:{folder_name}"]
+        )
 
         ns = self._namespace_idx
         gateway_folder = await self._session_folder.add_folder(
@@ -194,10 +249,8 @@ class WorkerMirror:
         )
         await gateway_node.set_writable()
 
-        # Track (gateway node, variant type) for the subscription handler
         self._map[worker_node.nodeid.to_string()] = (gateway_node, variant_type)
 
-        # Commands: wire up a proxy setter that forwards writes to the worker
         if folder_name == "Commands":
             self._server.set_attribute_value_setter(
                 gateway_node.nodeid,
@@ -235,17 +288,11 @@ class WorkerMirror:
     # --- command forwarding ---
 
     async def forward_command(self, name: str, value: Any) -> None:
-        if self._client is None:
+        if self._client is None or self._worker_root is None:
             return
 
-        worker_ns = await self._client.get_namespace_index(
-            _SIM_NAMESPACES[self.simulation_id]
-        )
-        worker_folder_name = _SIM_FOLDER_NAMES[self.simulation_id]
-
-        node = await self._client.nodes.root.get_child([
-            "0:Objects",
-            f"{worker_ns}:{worker_folder_name}",
+        worker_ns = self._worker_ns
+        node = await self._worker_root.get_child([
             f"{worker_ns}:Commands",
             f"{worker_ns}:{name}",
         ])
@@ -256,11 +303,7 @@ class WorkerMirror:
 
 
 class _MirrorSubscriptionHandler:
-    """Push worker value changes into the corresponding gateway node.
-
-    The handler runs on the client's event loop thread. Writing to the
-    gateway node must happen on the same loop; scheduling a task is enough.
-    """
+    """Push worker value changes into the corresponding gateway node."""
 
     def __init__(
         self, mapping: dict[str, tuple[Node, ua.VariantType]]
@@ -288,7 +331,5 @@ async def _safe_write(
     try:
         await node.write_value(ua.Variant(value, variant_type))
     except Exception:
-        # Log once per failure without a full traceback: these are noisy
-        # and usually indicate a type mismatch we've already handled.
         log.warning("mirror value update skipped",
                     extra={"variant_type": str(variant_type)})

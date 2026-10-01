@@ -24,7 +24,7 @@ from typing import Any, Callable
 import redis.asyncio as aioredis
 from asyncua import Server, ua
 
-from gateway.mirror import WorkerMirror
+from gateway.mirror import SimulationRootNotFound, WorkerMirror
 from shared.constants import (
     GATEWAY_EVT_CONSUMER_GROUP,
     REDIS_EVT_STREAM,
@@ -258,11 +258,15 @@ class Gateway:
 
         try:
             await mirror.connect_and_mirror()
+        except SimulationRootNotFound as exc:
+            log.error("worker has no discoverable simulation root",
+                      extra={"session_id": ev.session_id, "error": str(exc)})
+            return
         except Exception:
             log.exception("failed to mirror worker",
                           extra={"session_id": ev.session_id})
             return
-
+        
         async with self._mirrors_lock:
             self._mirrors[ev.session_id] = mirror
         log.info("mirror added", extra={"session_id": ev.session_id})

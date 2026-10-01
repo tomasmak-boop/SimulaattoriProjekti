@@ -213,6 +213,21 @@ class OPCUAAdapter:
             ua.NodeId(self._sim_id, ns),
             ua.QualifiedName(self._sim.SIMULATION_NAME, ns),
         )
+
+        # Self-describing metadata. Consumers (the gateway, discovery tools,
+        # CODESYS browsing) read these instead of relying on hardcoded maps.
+        # Add a new plugin and these properties describe it automatically.
+        await self._add_metadata_property(root, "SimulationId", self._sim_id)
+        await self._add_metadata_property(
+            root, "SimulationName", self._sim.SIMULATION_NAME
+        )
+        await self._add_metadata_property(
+            root, "SimulationVersion", self._sim.SIMULATION_VERSION
+        )
+        await self._add_metadata_property(
+            root, "NamespaceUri", self._namespace_uri
+        )
+
         commands_folder = await root.add_folder(
             ua.NodeId(f"{self._sim_id}.Commands", ns),
             ua.QualifiedName("Commands", ns),
@@ -297,6 +312,29 @@ class OPCUAAdapter:
         self._log.info(
             "command nodes built",
             extra={"count": len(self._command_nodes), "names": list(self._command_nodes)},
+        )
+
+    async def _add_metadata_property(
+        self, parent: ua.Node, name: str, value: str
+    ) -> None:
+        """Add a read-only string property under `parent`.
+
+        Uses asyncua's add_property so the node is typed as a Property
+        rather than a Variable. Clients that browse the tree see it as
+        metadata, not as a data point.
+        """
+        ns = self._namespace_idx
+        node = await parent.add_property(
+            ua.NodeId(f"{self._sim_id}.{name}", ns),
+            ua.QualifiedName(name, ns),
+            value,
+            ua.VariantType.String,
+        )
+        await node.write_attribute(
+            ua.AttributeIds.Description,
+            ua.DataValue(ua.Variant(ua.LocalizedText(
+                f"Self-describing metadata: {name}"
+            ))),
         )
 
     async def _build_measurements(self, folder: ua.Node) -> None:

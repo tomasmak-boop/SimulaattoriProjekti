@@ -1,0 +1,30 @@
+(.venv) user@user-776:~/cip-sim$ pkill -f 'worker_pool.worker.main'
+pkill -f 'gateway.main'
+sleep 2
+redis-cli --scan --pattern 'cip:*' | xargs -r redis-cli DEL
+redis-cli DEL cip:evt
+
+cd ~/cip-sim
+source .venv/bin/activate
+
+REDIS_URL=redis://localhost:6379/0 \
+python -m worker_pool.worker.main \
+    --session-id test1 \
+    --simulation-id cip \
+    --opcua-port 5001 \
+    --advertise-host 127.0.0.1 \
+    --http-host 127.0.0.1
+(integer) 1
+(integer) 0
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/user/cip-sim/worker_pool/worker/main.py", line 40, in <module>
+    from shared.constants import (
+  File "/home/user/cip-sim/shared/constants.py", line 20, in <module>
+    class _CommandBase(_StrictBase):
+  File "/home/user/cip-sim/shared/constants.py", line 22, in _CommandBase
+    issued_at: datetime = Field(default_factory=_now)
+                                                ^^^^
+NameError: name '_now' is not defined
+(.venv) user@user-776:~/cip-sim$
