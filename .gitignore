@@ -1,1 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtualenvs
 .venv/
+venv/
+env/
+
+# Django
+db.sqlite3
+db.sqlite3-journal
+/staticfiles/
+/media/
+
+# Env & secrets
+.env
+.env.local
+*.env.local
+
+# Project-specific artifacts (from the dump tool and personal notes)
+project_dump.*
+venv-activate.txt
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

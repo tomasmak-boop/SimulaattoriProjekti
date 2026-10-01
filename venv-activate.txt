@@ -1,8 +1,0 @@
-#activate venv
-cd ~/cip-sim
-source .venv/bin/activate
-which python
-
-
-#leave venv
-deactivate
