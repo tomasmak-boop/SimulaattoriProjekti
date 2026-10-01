@@ -40,6 +40,7 @@ from redis.exceptions import RedisError
 from shared.constants import (
     HEARTBEAT_INTERVAL,
     HEARTBEAT_TTL,
+    HTTP_PORT_OFFSET,
     PID_DIR,
     REDIS_EVT_STREAM,
     REDIS_HEARTBEAT_PREFIX,
@@ -56,11 +57,6 @@ from sim_runtime.registry import SimulationRegistry
 
 log = get_logger(__name__)
 
-
-# Default offset from OPC UA port to HTTP dashboard port. Worker on OPC UA
-# 5003 serves its dashboard on 6003, so a firewall rule for one range covers
-# both. Configurable via --http-port for unusual setups.
-HTTP_PORT_OFFSET = 1000
 
 # Fallback PID directory when the configured one is not writable (e.g. dev
 # runs outside systemd). Real deploys use PID_DIR.

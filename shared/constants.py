@@ -40,7 +40,7 @@ REDIS_IDLE_PREFIX: Final[str] = "cip:idle:"
 # --- Port pool -------------------------------------------------------------
 OPCUA_PORT_START: Final[int] = _int_env("OPCUA_PORT_START", 5000)
 OPCUA_PORT_END: Final[int] = _int_env("OPCUA_PORT_END", 5100)
-
+HTTP_PORT_OFFSET: Final[int] = _int_env("HTTP_PORT_OFFSET", 1000)
 
 # --- Timeouts (seconds) ----------------------------------------------------
 WORKER_STARTUP_TIMEOUT: Final[int] = _int_env("WORKER_STARTUP_TIMEOUT", 15)
