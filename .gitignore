@@ -22,10 +22,6 @@ db.sqlite3-journal
 .env.local
 *.env.local
 
-# Project-specific artifacts (from the dump tool and personal notes)
-project_dump.*
-venv-activate.txt
-
 # Editor / OS
 .vscode/
 .idea/
