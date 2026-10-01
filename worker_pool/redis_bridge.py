@@ -90,7 +90,8 @@ class RedisBridge:
         self._manager = manager
         self._consumer = consumer_name or f"worker-pool-{os.getpid()}"
         self._log = log
-
+        # None = unknown; True/False once we've tried once.
+        self._xautoclaim_supported: bool | None = None
     # ------------------------------------------------------------------
     # Setup
     # ------------------------------------------------------------------
@@ -286,11 +287,14 @@ class RedisBridge:
     async def _claim_abandoned(self) -> None:
         """Take over messages abandoned by a previous consumer.
 
-        XAUTOCLAIM returns messages that have been pending for longer
-        than min-idle-time and reassigns them to this consumer. We then
-        re-dispatch them. This is the mechanism that makes at-least-once
-        delivery actually work across daemon restarts.
+        XAUTOCLAIM requires Redis 6.2+. On older servers the command
+        returns an error; we detect that once and disable the feature
+        for the lifetime of the bridge. Recovery is a safety net for
+        daemon crashes mid-handle, not a correctness requirement.
         """
+        if self._xautoclaim_supported is False:
+            return
+
         try:
             result = await self._redis.xautoclaim(
                 REDIS_CMD_STREAM,
@@ -300,9 +304,22 @@ class RedisBridge:
                 start_id="0-0",
                 count=10,
             )
-        except RedisError:
+        except RedisError as exc:
+            msg = str(exc).lower()
+            if "unknown command" in msg and "xautoclaim" in msg:
+                if self._xautoclaim_supported is None:
+                    self._log.warning(
+                        "XAUTOCLAIM not supported by this Redis; "
+                        "abandoned-message recovery disabled. "
+                        "Upgrade to Redis 6.2 or newer to enable."
+                    )
+                self._xautoclaim_supported = False
+                return
             self._log.exception("xautoclaim failed")
             return
+
+        if self._xautoclaim_supported is None:
+            self._xautoclaim_supported = True
 
         # asyncua-client returns (next_cursor, messages, deleted_ids)
         if not result:
@@ -315,7 +332,7 @@ class RedisBridge:
                        extra={"count": len(messages)})
         for msg_id, fields in messages:
             await self._handle_message(msg_id, fields)
-
+            
     # ------------------------------------------------------------------
     # Ack helper
     # ------------------------------------------------------------------

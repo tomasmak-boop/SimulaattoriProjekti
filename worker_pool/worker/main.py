@@ -116,25 +116,18 @@ async def _heartbeat_loop(
         cip:hb:<sid>    JSON heartbeat, refreshed every HEARTBEAT_INTERVAL
         cip:idle:<sid>  Unix timestamp of the last external OPC UA activity
 
-    The daemon reads these to decide if a session is alive and whether it
-    should be stopped for idleness.
+    The first heartbeat is written immediately so the worker is visible
+    to the gateway and to reconciliation without an interval-long delay.
     """
     hb_key = f"{REDIS_HEARTBEAT_PREFIX}{session_id}"
     idle_key = f"{REDIS_IDLE_PREFIX}{session_id}"
 
     start_mono = time.monotonic()
-    start_wall = time.time()
     last_seen_count = 0
-    last_activity_wall = start_wall
+    last_activity_wall = time.time()
 
-    while not stop.is_set():
-        try:
-            await asyncio.wait_for(stop.wait(), timeout=HEARTBEAT_INTERVAL)
-            return  # stop was set during the wait
-        except asyncio.TimeoutError:
-            pass
-
-        # Detect new external activity by watching the adapter's counter.
+    async def write_heartbeat() -> None:
+        nonlocal last_seen_count, last_activity_wall
         count = adapter.external_request_count()
         if count != last_seen_count:
             last_seen_count = count
@@ -146,7 +139,6 @@ async def _heartbeat_loop(
             "uptime": round(time.monotonic() - start_mono, 1),
             "requests": count,
         })
-
         try:
             await r.set(hb_key, payload, ex=HEARTBEAT_TTL)
             await r.set(idle_key, str(int(last_activity_wall)),
@@ -154,6 +146,16 @@ async def _heartbeat_loop(
         except RedisError:
             log.exception("heartbeat write failed; will retry next interval")
 
+    # Immediate first heartbeat.
+    await write_heartbeat()
+
+    while not stop.is_set():
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=HEARTBEAT_INTERVAL)
+            return  # stop was set during the wait
+        except asyncio.TimeoutError:
+            pass
+        await write_heartbeat()
 
 # ---------------------------------------------------------------------------
 # PID file
