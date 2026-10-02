@@ -20,7 +20,7 @@ class JSONFormatter(logging.Formatter):
     fields, and every log aggregator expects it by default.
     """
 
-    _CONTEXT_KEYS = ("session_id", "simulation_id", "pid", "port", "request_id")
+    _CONTEXT_KEYS = ("session_id", "simulation_id", "pid", "port", "request_id", "line")
 
     def format(self, record: logging.LogRecord) -> str:
         payload: dict[str, Any] = {
