@@ -11,6 +11,17 @@ One worker runs exactly one simulation session:
 
 Run by the daemon as a subprocess (see worker_pool/manager.py). Can also
 be run by hand for development; see --help.
+
+Bind vs advertise: workers are internal — the gateway is their only
+client, and it connects over loopback. So the default bind_host is
+127.0.0.1, and advertise_host defaults to the same. Set advertise_host
+to a different value only if a client needs to reach the worker
+directly (rare; the gateway is the intended entry point).
+
+Ready signalling: SessionReadyEvent is published by the adapter's
+on_ready callback, which fires once the OPC UA port is actually bound.
+Publishing before bind caused a race where the gateway tried to connect
+to a socket that wasn't listening yet and gave up.
 """
 
 from __future__ import annotations
@@ -62,8 +73,25 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--session-id", required=True)
     p.add_argument("--simulation-id", required=True)
     p.add_argument("--opcua-port", type=int, required=True)
-    p.add_argument("--advertise-host", required=True,
-                   help="Host or IP that OPC UA clients will use to connect.")
+
+    # Two separate concepts. bind_host is the interface the socket is
+    # attached to; advertise_host is what goes into the OPC UA
+    # discovery response. They default to the same value (loopback) so
+    # the gateway can reach the worker and any client that happens to
+    # see the URL can too.
+    p.add_argument(
+        "--bind-host", default="127.0.0.1",
+        help="Interface to bind the OPC UA socket to. Default: 127.0.0.1 "
+             "(workers are internal, reachable by the gateway over "
+             "loopback).",
+    )
+    p.add_argument(
+        "--advertise-host", default=None,
+        help="Host that appears in the OPC UA endpoint URL. Defaults to "
+             "--bind-host. Set this only if a client must reach the worker "
+             "at a different address than it binds to.",
+    )
+
     p.add_argument("--http-host", default="0.0.0.0")
     p.add_argument("--http-port", type=int, default=None,
                    help=f"Defaults to opcua_port + {HTTP_PORT_OFFSET}.")
@@ -151,6 +179,40 @@ async def _heartbeat_loop(
 
 
 # ---------------------------------------------------------------------------
+# Ready event
+# ---------------------------------------------------------------------------
+
+async def _publish_ready(
+    r: aioredis.Redis,
+    *,
+    session_id: str,
+    simulation_id: str,
+    port: int,
+) -> None:
+    """Publish SessionReadyEvent.
+
+    Called by the adapter's on_ready callback once the OPC UA port is
+    actually bound and the server is accepting connections. Publishing
+    earlier (before bind) is what caused the gateway to race on
+    ConnectionRefusedError.
+    """
+    try:
+        ready = SessionReadyEvent(
+            session_id=session_id,
+            simulation_id=simulation_id,
+            port=port,
+            pid=os.getpid(),
+        )
+        await r.xadd(
+            REDIS_EVT_STREAM,
+            {"payload": ready.model_dump_json()},
+            maxlen=STREAM_MAXLEN,
+        )
+    except RedisError:
+        log.exception("failed to publish ready event; continuing anyway")
+
+
+# ---------------------------------------------------------------------------
 # PID file
 # ---------------------------------------------------------------------------
 
@@ -198,9 +260,14 @@ async def _run(args: argparse.Namespace) -> int:
         args.opcua_port + HTTP_PORT_OFFSET
     )
 
+    # advertise_host defaults to bind_host when not given.
+    bind_host = args.bind_host
+    advertise_host = args.advertise_host or bind_host
+
     adapter = OPCUAAdapter(
         sim,
-        advertise_host=args.advertise_host,
+        advertise_host=advertise_host,
+        bind_host=bind_host,
         port=args.opcua_port,
     )
     dashboard = HTTPDashboard(
@@ -221,31 +288,15 @@ async def _run(args: argparse.Namespace) -> int:
         "session_id": args.session_id,
         "simulation_id": args.simulation_id,
         "endpoint": adapter.endpoint,
+        "bind_host": bind_host,
         "http_port": http_port,
         "pid": os.getpid(),
     })
 
-    # Build the address space before publishing "ready". Any schema error
-    # fails fast here rather than three seconds into the tick loop.
+    # Build the address space before entering the run loop. Any schema
+    # error fails fast here, rather than three seconds into the tick
+    # loop when the port is already bound and half a session exists.
     await adapter.initialize()
-
-    # Publish ready BEFORE the port is bound. The tiny race between this
-    # event and the actual bind is acceptable: if bind fails a moment later,
-    # the process exits non-zero and the daemon marks the session failed.
-    try:
-        ready = SessionReadyEvent(
-            session_id=args.session_id,
-            simulation_id=args.simulation_id,
-            port=args.opcua_port,
-            pid=os.getpid(),
-        )
-        await r.xadd(
-            REDIS_EVT_STREAM,
-            {"payload": ready.model_dump_json()},
-            maxlen=STREAM_MAXLEN,
-        )
-    except RedisError:
-        log.exception("failed to publish ready event; continuing anyway")
 
     pid_path = _write_pid_file(args.session_id)
 
@@ -256,12 +307,21 @@ async def _run(args: argparse.Namespace) -> int:
 
     dashboard.start()
 
+    # Ready fires from inside adapter.run() once the port is bound.
+    async def on_ready() -> None:
+        await _publish_ready(
+            r,
+            session_id=args.session_id,
+            simulation_id=args.simulation_id,
+            port=args.opcua_port,
+        )
+
     failed = False
 
     try:
         async with asyncio.TaskGroup() as tg:
             tg.create_task(
-                adapter.run(stop),
+                adapter.run(stop, on_ready=on_ready),
                 name=f"opcua-{args.session_id}",
             )
             tg.create_task(

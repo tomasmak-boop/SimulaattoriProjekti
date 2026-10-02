@@ -250,31 +250,72 @@ class Gateway:
             f"opc.tcp://127.0.0.1:{ev.port}/{ev.simulation_id}/"
         )
 
-        mirror = WorkerMirror(
-            session_id=ev.session_id,
-            simulation_id=ev.simulation_id,
-            worker_endpoint=worker_endpoint,
-            parent_folder=self._sessions_folder,
-            namespace_idx=self._namespace_idx,
-            server=self._server,
-            enqueue_write=self._enqueue_write,
-        )
+        # Retry the connect with backoff. The worker publishes its
+        # "ready" event only after the port is bound (see
+        # sim_runtime/opcua_adapter.py: run(on_ready=...) ), so under
+        # normal operation the first attempt succeeds. This retry
+        # covers the remaining cases: network hiccups, a gateway that
+        # reconciles a heartbeat a split second before the worker
+        # finishes binding, or a slow asyncua handshake.
+        #
+        # A fresh WorkerMirror per attempt: a failed connect can leave
+        # a half-open asyncua client, and reusing it tends to fail on
+        # the second try with a confusing error.
+        max_attempts = 5
+        mirror: WorkerMirror | None = None
 
-        try:
-            await mirror.connect_and_mirror()
-        except SimulationRootNotFound as exc:
-            log.error("worker has no discoverable simulation root",
-                      extra={"session_id": ev.session_id, "error": str(exc)})
-            return
-        except Exception:
-            log.exception("failed to mirror worker",
-                          extra={"session_id": ev.session_id})
+        for attempt in range(1, max_attempts + 1):
+            candidate = WorkerMirror(
+                session_id=ev.session_id,
+                simulation_id=ev.simulation_id,
+                worker_endpoint=worker_endpoint,
+                parent_folder=self._sessions_folder,
+                namespace_idx=self._namespace_idx,
+                server=self._server,
+                enqueue_write=self._enqueue_write,
+            )
+            try:
+                await candidate.connect_and_mirror()
+                mirror = candidate
+                break
+            except SimulationRootNotFound as exc:
+                # Not a transient error — the worker is up but its
+                # address space doesn't have a discoverable root. Retry
+                # won't fix it.
+                log.error(
+                    "worker has no discoverable simulation root",
+                    extra={"session_id": ev.session_id, "error": str(exc)},
+                )
+                return
+            except Exception as exc:
+                if attempt >= max_attempts:
+                    log.exception(
+                        "failed to mirror worker after retries",
+                        extra={
+                            "session_id": ev.session_id,
+                            "attempts": max_attempts,
+                        },
+                    )
+                    return
+                delay = min(0.3 * attempt, 1.5)
+                log.info(
+                    "mirror connect failed; retrying",
+                    extra={
+                        "session_id": ev.session_id,
+                        "attempt": attempt,
+                        "delay_seconds": delay,
+                        "error": type(exc).__name__,
+                    },
+                )
+                await asyncio.sleep(delay)
+
+        if mirror is None:
             return
 
         async with self._mirrors_lock:
             self._mirrors[ev.session_id] = mirror
         log.info("mirror added", extra={"session_id": ev.session_id})
-
+        
     async def _remove_mirror(self, session_id: str) -> None:
         async with self._mirrors_lock:
             mirror = self._mirrors.pop(session_id, None)
