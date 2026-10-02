@@ -11,6 +11,12 @@ One worker runs exactly one simulation session:
 
 Run by the daemon as a subprocess (see worker_pool/manager.py). Can also
 be run by hand for development; see --help.
+
+Bind vs advertise: workers are internal — the gateway is their only
+client, and it connects over loopback. So the default bind_host is
+127.0.0.1, and advertise_host defaults to the same. Set advertise_host
+to a different value only if a client needs to reach the worker
+directly (rare; the gateway is the intended entry point).
 """
 
 from __future__ import annotations
@@ -62,8 +68,25 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--session-id", required=True)
     p.add_argument("--simulation-id", required=True)
     p.add_argument("--opcua-port", type=int, required=True)
-    p.add_argument("--advertise-host", required=True,
-                   help="Host or IP that OPC UA clients will use to connect.")
+
+    # Two separate concepts. bind_host is the interface the socket is
+    # attached to; advertise_host is what goes into the OPC UA
+    # discovery response. They default to the same value (loopback) so
+    # the gateway can reach the worker and any client that happens to
+    # see the URL can too.
+    p.add_argument(
+        "--bind-host", default="127.0.0.1",
+        help="Interface to bind the OPC UA socket to. Default: 127.0.0.1 "
+             "(workers are internal, reachable by the gateway over "
+             "loopback).",
+    )
+    p.add_argument(
+        "--advertise-host", default=None,
+        help="Host that appears in the OPC UA endpoint URL. Defaults to "
+             "--bind-host. Set this only if a client must reach the worker "
+             "at a different address than it binds to.",
+    )
+
     p.add_argument("--http-host", default="0.0.0.0")
     p.add_argument("--http-port", type=int, default=None,
                    help=f"Defaults to opcua_port + {HTTP_PORT_OFFSET}.")
@@ -198,9 +221,14 @@ async def _run(args: argparse.Namespace) -> int:
         args.opcua_port + HTTP_PORT_OFFSET
     )
 
+    # advertise_host defaults to bind_host when not given.
+    bind_host = args.bind_host
+    advertise_host = args.advertise_host or bind_host
+
     adapter = OPCUAAdapter(
         sim,
-        advertise_host=args.advertise_host,
+        advertise_host=advertise_host,
+        bind_host=bind_host,
         port=args.opcua_port,
     )
     dashboard = HTTPDashboard(
@@ -221,6 +249,7 @@ async def _run(args: argparse.Namespace) -> int:
         "session_id": args.session_id,
         "simulation_id": args.simulation_id,
         "endpoint": adapter.endpoint,
+        "bind_host": bind_host,
         "http_port": http_port,
         "pid": os.getpid(),
     })

@@ -18,6 +18,11 @@ Design notes:
   plain string to add_object/add_variable/add_folder would place the
   BrowseName in ns=0 (the OPC UA base namespace), which makes client-side
   path lookups like `2:Commands` fail with BadNoMatch.
+- Bind address and advertised address are separate. asyncua's
+  set_endpoint() conflates the URL a server binds to with the URL it
+  advertises. We bind to `bind_host` (usually 0.0.0.0 or 127.0.0.1) and
+  then rewrite the advertised URLs in the endpoint list after init() so
+  discovery responses carry `advertise_host`.
 """
 
 from __future__ import annotations
@@ -143,15 +148,25 @@ class OPCUAAdapter:
         *,
         advertise_host: str,
         port: int,
+        bind_host: str = "0.0.0.0",
         server_name: str | None = None,
     ) -> None:
         self._sim = sim
         self._sim_id = sim.SIMULATION_ID
         self._advertise_host = advertise_host
+        self._bind_host = bind_host
         self._port = port
 
-        # Endpoint path is /<simulation_id>/ so the URL self-describes.
+        # The URL that goes into discovery responses and gets shown to
+        # clients. This is what CODESYS or the gateway should use.
         self._endpoint = f"opc.tcp://{advertise_host}:{port}/{self._sim_id}/"
+
+        # The URL asyncua actually binds the TCP socket to. Usually
+        # 0.0.0.0 (all interfaces) or 127.0.0.1 (loopback only). We
+        # rewrite the advertised URLs in the endpoint list after init()
+        # so clients see _endpoint, not this.
+        self._bind_endpoint = f"opc.tcp://{bind_host}:{port}/{self._sim_id}/"
+
         self._namespace_uri = f"urn:cip-sim:{self._sim_id}:{sim.SIMULATION_VERSION}"
 
         self._server = Server()
@@ -178,6 +193,7 @@ class OPCUAAdapter:
 
     @property
     def endpoint(self) -> str:
+        """The advertised endpoint URL (what clients should use)."""
         return self._endpoint
 
     def last_external_activity(self) -> float | None:
@@ -193,7 +209,11 @@ class OPCUAAdapter:
     async def initialize(self) -> None:
         """Build the address space. Called once before run()."""
         await self._server.init()
-        self._server.set_endpoint(self._endpoint)
+
+        # Bind to the bind_host interface. asyncua will use this URL for
+        # both binding and advertising; we override the advertised URLs
+        # immediately after init() below.
+        self._server.set_endpoint(self._bind_endpoint)
         self._server.set_server_name(self._server_name)
         await self._server.set_application_uri(f"urn:cip-sim:server:{self._sim_id}")
 
@@ -206,6 +226,11 @@ class OPCUAAdapter:
         self._namespace_idx = await self._server.register_namespace(
             self._namespace_uri
         )
+
+        # If bind_host differs from advertise_host, rewrite the URL that
+        # asyncua will report in GetEndpoints and in node metadata.
+        if self._bind_host != self._advertise_host:
+            self._rewrite_advertised_urls()
 
         ns = self._namespace_idx
 
@@ -249,7 +274,11 @@ class OPCUAAdapter:
 
         self._log.info(
             "OPC UA address space built",
-            extra={"endpoint": self._endpoint, "namespace": self._namespace_uri},
+            extra={
+                "endpoint": self._endpoint,
+                "bind": self._bind_endpoint,
+                "namespace": self._namespace_uri,
+            },
         )
 
     async def run(self, stop: asyncio.Event) -> None:
@@ -286,6 +315,61 @@ class OPCUAAdapter:
                     pass
 
             self._log.info("OPC UA server stopping")
+
+    # ---- advertised URL rewriting ----
+
+    def _rewrite_advertised_urls(self) -> None:
+        """Rewrite the endpoint URLs asyncua reports to clients.
+
+        asyncua builds the endpoint description list during init() from
+        the value passed to set_endpoint(). We bound the socket to
+        bind_host, but clients need to see advertise_host in the
+        discovery response, otherwise they'll try to connect to
+        0.0.0.0:port (invalid) or 127.0.0.1:port (wrong machine).
+
+        This mutates the endpoint list in place. It is called once,
+        immediately after init(), before the server starts accepting
+        connections.
+        """
+        try:
+            endpoints = self._server.endpoints
+        except AttributeError:
+            self._log.warning(
+                "asyncua server has no .endpoints list; advertised URLs "
+                "will use the bind host. Advertise may be wrong."
+            )
+            return
+
+        if not endpoints:
+            self._log.warning(
+                "asyncua endpoints list is empty; skipping URL rewrite"
+            )
+            return
+
+        rewrite_from = f"opc.tcp://{self._bind_host}:{self._port}"
+        for ep in endpoints:
+            try:
+                url = ep.EndpointUrl
+                if url.startswith(rewrite_from):
+                    ep.EndpointUrl = (
+                        f"opc.tcp://{self._advertise_host}:{self._port}"
+                        + url[len(rewrite_from):]
+                    )
+                else:
+                    # Unexpected URL shape; fall back to the full
+                    # advertised endpoint, keeping the path empty.
+                    ep.EndpointUrl = self._endpoint
+            except Exception:
+                self._log.exception("failed to rewrite endpoint URL")
+
+        self._log.info(
+            "advertised endpoint URLs rewritten",
+            extra={
+                "bind": self._bind_endpoint,
+                "advertise": self._endpoint,
+                "count": len(endpoints),
+            },
+        )
 
     # ---- address space construction ----
 
