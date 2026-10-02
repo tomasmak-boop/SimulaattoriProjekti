@@ -23,13 +23,18 @@ Design notes:
   advertises. We bind to `bind_host` (usually 0.0.0.0 or 127.0.0.1) and
   then rewrite the advertised URLs in the endpoint list after init() so
   discovery responses carry `advertise_host`.
+- run() accepts an optional on_ready callback that fires after the
+  asyncua server context has been entered (i.e. after the port is
+  bound). This lets the caller publish a "ready" signal only once the
+  server is actually accepting connections, avoiding a race where a
+  client connects before bind completes.
 """
 
 from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from asyncua import Server, ua
 from asyncua.common.callback import CallbackType
@@ -281,17 +286,36 @@ class OPCUAAdapter:
             },
         )
 
-    async def run(self, stop: asyncio.Event) -> None:
+    async def run(
+        self,
+        stop: asyncio.Event,
+        *,
+        on_ready: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
         """Run the server until `stop` is set.
 
         Enters the asyncua server context (starts accepting connections),
         then loops at PHYSICS_HZ: step the simulation, push values to OPC UA,
         await the stop event with a short timeout.
+
+        If `on_ready` is provided, it is awaited exactly once, immediately
+        after the server context is entered and the port is bound. Use it
+        to publish a "session ready" signal without racing against the
+        bind.
         """
         tick = 1.0 / PHYSICS_HZ
         last_tick = time.monotonic()
 
         async with self._server:
+            # The socket is now bound; connections will be accepted.
+            # Fire the ready callback before doing anything else so the
+            # caller knows the endpoint is live.
+            if on_ready is not None:
+                try:
+                    await on_ready()
+                except Exception:
+                    self._log.exception("on_ready callback raised")
+
             self._log.info("OPC UA server running", extra={"endpoint": self._endpoint})
 
             while not stop.is_set():
