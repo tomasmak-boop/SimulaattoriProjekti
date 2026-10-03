@@ -169,17 +169,44 @@ async def _write_gateway(
         print(f"wrote {session_id}/{name} = {value!r}")
 
 
+async def _find_plugin_node(c: Client, sim_id: str, name: str):
+    """Search Commands, Measurements, Status for a node name.
+
+    Reads may target any of the three folders. Commands first because
+    operators tend to type command names when checking state.
+    """
+    last_exc: Exception | None = None
+    for folder in ("Commands", "Measurements", "Status"):
+        try:
+            return await _resolve_plugin(c, sim_id, folder, name)
+        except ua.UaStatusCodeError as exc:
+            last_exc = exc
+    assert last_exc is not None
+    raise last_exc
+
+
+async def _find_gateway_node(c: Client, session_id: str, name: str):
+    """Same as _find_plugin_node, but through the gateway."""
+    last_exc: Exception | None = None
+    for folder in ("Commands", "Measurements", "Status"):
+        try:
+            return await _resolve_gateway(c, session_id, folder, name)
+        except ua.UaStatusCodeError as exc:
+            last_exc = exc
+    assert last_exc is not None
+    raise last_exc
+
+
 async def _read_plugin(c: Client, sim_id: str, names: list[str]) -> None:
     for name in names:
-        node = await _resolve_plugin(c, sim_id, "Measurements", name)
+        node = await _find_plugin_node(c, sim_id, name)
         print(f"{name} = {await node.read_value()!r}")
 
 
 async def _read_gateway(c: Client, session_id: str, names: list[str]) -> None:
     for name in names:
-        node = await _resolve_gateway(c, session_id, "Measurements", name)
+        node = await _find_gateway_node(c, session_id, name)
         print(f"{session_id}/{name} = {await node.read_value()!r}")
-
 
 # --- entry point ------------------------------------------------------------
 
