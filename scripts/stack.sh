@@ -13,6 +13,38 @@ RUN_DIR="$PROJECT_ROOT/.run"
 LOG_DIR="$RUN_DIR/logs"
 PID_DIR="$RUN_DIR/pids"
 
+# ---------------------------------------------------------------------------
+# Load .env
+# ---------------------------------------------------------------------------
+# Reads $PROJECT_ROOT/.env if it exists. Variables already set in the shell
+# take precedence, so "SERVER_IP=1.2.3.4 ./scripts/stack.sh up" overrides the
+# file for one run without editing it.
+#
+# Supported syntax: KEY=value, optional single or double quotes around the
+# value, blank lines, and # comments. No export prefix, no line continuation.
+if [ -f "$PROJECT_ROOT/.env" ]; then
+    while IFS='=' read -r _key _value || [ -n "$_key" ]; do
+        # Trim leading and trailing whitespace from the key.
+        _key="${_key#"${_key%%[![:space:]]*}"}"
+        _key="${_key%"${_key##*[![:space:]]}"}"
+        [ -z "$_key" ] && continue
+        [ "${_key:0:1}" = "#" ] && continue
+        # Trim surrounding whitespace from the value.
+        _value="${_value#"${_value%%[![:space:]]*}"}"
+        _value="${_value%"${_value##*[![:space:]]}"}"
+        # Strip a single pair of matching quotes.
+        case "$_value" in
+            \"*\") _value="${_value#\"}"; _value="${_value%\"}" ;;
+            \'*\') _value="${_value#\'}"; _value="${_value%\'}" ;;
+        esac
+        # Only export if not already set — shell env wins.
+        if [ -z "${!_key+x}" ]; then
+            export "$_key=$_value"
+        fi
+    done < "$PROJECT_ROOT/.env"
+    unset _key _value
+fi
+
 # Auto-detect server IP if not overridden
 if [ -z "${SERVER_IP:-}" ]; then
     SERVER_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
@@ -25,6 +57,7 @@ REDIS_URL="${REDIS_URL:-redis://localhost:6379/0}"
 OPCUA_PORT_START="${OPCUA_PORT_START:-5000}"
 OPCUA_PORT_END="${OPCUA_PORT_END:-5100}"
 READY_TIMEOUT="${READY_TIMEOUT:-15}"
+GATEWAY_PUBLIC_HOST="${GATEWAY_PUBLIC_HOST:-$SERVER_IP:$GATEWAY_PORT}"
 
 # ---------- helpers ----------
 
@@ -112,7 +145,7 @@ cmd_up() {
 
     start_service django \
         env REDIS_URL="$REDIS_URL" \
-            GATEWAY_PUBLIC_HOST="$SERVER_IP:$GATEWAY_PORT" \
+            GATEWAY_PUBLIC_HOST="$GATEWAY_PUBLIC_HOST" \ 
             python manage.py runserver "0.0.0.0:$DJANGO_PORT"
 
     start_service event-consumer \
