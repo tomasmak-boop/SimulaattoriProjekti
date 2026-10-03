@@ -146,6 +146,7 @@ cmd_up() {
     start_service django \
         env REDIS_URL="$REDIS_URL" \
             GATEWAY_PUBLIC_HOST="$GATEWAY_PUBLIC_HOST" \
+            PYTHONUNBUFFERED=1 \
             python manage.py runserver "0.0.0.0:$DJANGO_PORT"
 
     start_service event-consumer \
@@ -159,7 +160,7 @@ cmd_up() {
     log "waiting for services to become ready..."
 
     wait_for_log worker-pool       '"msg":"daemon ready"'                || { err "worker-pool not ready";    cmd_status; return 1; }
-    wait_for_log django            'Starting development server'         || { err "django not ready";         cmd_status; return 1; }
+    wait_for_log django            'Watching for file changes'           || { err "django not ready";         cmd_status; return 1; }
     wait_for_log event-consumer    'event consumer started'              || { err "event-consumer not ready"; cmd_status; return 1; }
     wait_for_log gateway           '"msg":"gateway listening"'           || { err "gateway not ready";        cmd_status; return 1; }
 
