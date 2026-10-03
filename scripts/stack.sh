@@ -145,7 +145,7 @@ cmd_up() {
 
     start_service django \
         env REDIS_URL="$REDIS_URL" \
-            GATEWAY_PUBLIC_HOST="$GATEWAY_PUBLIC_HOST" \ 
+            GATEWAY_PUBLIC_HOST="$GATEWAY_PUBLIC_HOST" \
             python manage.py runserver "0.0.0.0:$DJANGO_PORT"
 
     start_service event-consumer \
