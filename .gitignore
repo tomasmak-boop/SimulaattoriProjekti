@@ -27,3 +27,8 @@ db.sqlite3-journal
 .idea/
 .DS_Store
 Thumbs.db
+
+# Runtime state from scripts/stack.sh (server-local, never commit)
+.run/
+*.pid
+*.log
