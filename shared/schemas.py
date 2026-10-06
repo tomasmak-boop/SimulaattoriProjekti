@@ -53,8 +53,12 @@ class StartSessionCommand(_CommandBase):
 class StopSessionCommand(_CommandBase):
     kind: Literal["stop_session"] = "stop_session"
     session_id: str
-    reason: Literal["user_request", "idle_timeout", "admin_action"] = "user_request"
-
+    reason: Literal[
+        "user_request",
+        "idle_timeout",
+        "admin_action",
+        "replaced_by_new_session",
+    ] = "user_request"
 
 class PingCommand(_CommandBase):
     kind: Literal["ping"] = "ping"
