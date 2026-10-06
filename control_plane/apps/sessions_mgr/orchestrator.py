@@ -1,16 +1,13 @@
 """Session orchestrator.
 
 The Django side of the Redis bridge. Publishes StartSessionCommand and
-StopSessionCommand to the command stream, and (via a separate consumer
-process) receives lifecycle events on the event stream.
+StopSessionCommand to the command stream; a separate consumer process
+receives lifecycle events on the event stream.
 
 Uses the synchronous redis client. Django views are synchronous by
 default and the operations here are single XADD calls, so an async
 client would add complexity without benefit. The event consumer, which
 is a long-running process, uses the async client instead.
-
-The Redis connection is created lazily on first use and cached at
-module scope. ``reset_for_tests`` clears it.
 """
 
 from __future__ import annotations
@@ -45,13 +42,11 @@ def _get_client() -> redis.Redis:
 
 
 def reset_for_tests() -> None:
-    """Clear the cached client. Used by test fixtures."""
     global _client
     _client = None
 
 
 def _publish(command) -> str:
-    """XADD a command and return its request_id."""
     client = _get_client()
     client.xadd(
         REDIS_CMD_STREAM,
@@ -63,9 +58,16 @@ def _publish(command) -> str:
 
 
 def request_start(session) -> str:
-    """Publish a start command for the given Session row."""
+    """Publish a start command for the given Session row.
+
+    The session's external_id (slug, or UUID if no slug is set) is
+    what the daemon and gateway see. Using it here means a session
+    with a slug always appears at the same path in the OPC UA tree,
+    regardless of how many times it has been re-created.
+    """
+    external_id = session.external_id()
     command = StartSessionCommand(
-        session_id=str(session.id),
+        session_id=external_id,
         simulation_id=session.simulation_id,
         config_params=session.config_params or {},
         request_id=str(uuid.uuid4()),
@@ -73,7 +75,7 @@ def request_start(session) -> str:
     )
     request_id = _publish(command)
     log.info("start command published", extra={
-        "session_id": str(session.id),
+        "session_id": external_id,
         "simulation_id": session.simulation_id,
         "request_id": request_id,
     })
@@ -82,15 +84,16 @@ def request_start(session) -> str:
 
 def request_stop(session, reason: str = "user_request") -> str:
     """Publish a stop command for the given Session row."""
+    external_id = session.external_id()
     command = StopSessionCommand(
-        session_id=str(session.id),
+        session_id=external_id,
         reason=reason,
         request_id=str(uuid.uuid4()),
         issued_at=datetime.now(timezone.utc),
     )
     request_id = _publish(command)
     log.info("stop command published", extra={
-        "session_id": str(session.id),
+        "session_id": external_id,
         "reason": reason,
         "request_id": request_id,
     })
