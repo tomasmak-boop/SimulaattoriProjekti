@@ -60,14 +60,16 @@ def _publish(command) -> str:
 def request_start(session) -> str:
     """Publish a start command for the given Session row.
 
-    The session's external_id (slug, or UUID if no slug is set) is
-    what the daemon and gateway see. Using it here means a session
-    with a slug always appears at the same path in the OPC UA tree,
-    regardless of how many times it has been re-created.
+    session_id carries the UUID (identity for the daemon and Redis),
+    session_name carries the slug or UUID (the folder the gateway
+    creates in the OPC UA tree). Both are always sent, so a slug
+    reuse cannot confuse the two.
     """
-    external_id = session.external_id()
+    session_id = str(session.id)
+    session_name = session.external_id()
     command = StartSessionCommand(
-        session_id=external_id,
+        session_id=session_id,
+        session_name=session_name,
         simulation_id=session.simulation_id,
         config_params=session.config_params or {},
         request_id=str(uuid.uuid4()),
@@ -75,7 +77,8 @@ def request_start(session) -> str:
     )
     request_id = _publish(command)
     log.info("start command published", extra={
-        "session_id": external_id,
+        "session_id": session_id,
+        "session_name": session_name,
         "simulation_id": session.simulation_id,
         "request_id": request_id,
     })
@@ -84,16 +87,19 @@ def request_start(session) -> str:
 
 def request_stop(session, reason: str = "user_request") -> str:
     """Publish a stop command for the given Session row."""
-    external_id = session.external_id()
+    session_id = str(session.id)
+    session_name = session.external_id()
     command = StopSessionCommand(
-        session_id=external_id,
+        session_id=session_id,
+        session_name=session_name,
         reason=reason,
         request_id=str(uuid.uuid4()),
         issued_at=datetime.now(timezone.utc),
     )
     request_id = _publish(command)
     log.info("stop command published", extra={
-        "session_id": external_id,
+        "session_id": session_id,
+        "session_name": session_name,
         "reason": reason,
         "request_id": request_id,
     })

@@ -13,9 +13,10 @@ would silently drop them.
 At-least-once delivery means command handlers must be idempotent.
 Starting an already-tracked session raises AlreadyRunningError; the
 bridge logs and ignores it rather than retrying. Stopping an untracked
-session returns False; the bridge skips the stopped event, since
-publishing it would risk the event consumer applying it to a different
-session that now owns the same slug.
+session returns False; the bridge skips the stopped event.
+
+Every command and event carries both session_id (UUID) and
+session_name (slug or UUID). The bridge forwards both unchanged.
 
 The consumer name includes the daemon PID, so a restart reads as a
 fresh consumer. Messages left pending by the previous incarnation are
@@ -212,6 +213,7 @@ class RedisBridge:
     async def _handle_start(self, cmd: StartSessionCommand) -> None:
         self._log.info("start command received", extra={
             "session_id": cmd.session_id,
+            "session_name": cmd.session_name,
             "simulation_id": cmd.simulation_id,
             "request_id": cmd.request_id,
         })
@@ -219,6 +221,7 @@ class RedisBridge:
         try:
             record = await self._manager.start_worker(
                 session_id=cmd.session_id,
+                session_name=cmd.session_name,
                 simulation_id=cmd.simulation_id,
                 config_params=cmd.config_params,
             )
@@ -229,18 +232,21 @@ class RedisBridge:
         except WorkerStartupError as exc:
             await self.publish_event(SessionFailedEvent(
                 session_id=cmd.session_id,
+                session_name=cmd.session_name,
                 error=f"startup failed: {exc}",
             ))
             return
         except WorkerManagerError as exc:
             await self.publish_event(SessionFailedEvent(
                 session_id=cmd.session_id,
+                session_name=cmd.session_name,
                 error=f"manager error: {exc}",
             ))
             return
 
         await self.publish_event(SessionStartedEvent(
             session_id=record.session_id,
+            session_name=record.session_name,
             simulation_id=record.simulation_id,
             port=record.port,
             pid=record.pid,
@@ -252,6 +258,7 @@ class RedisBridge:
     async def _handle_stop(self, cmd: StopSessionCommand) -> None:
         self._log.info("stop command received", extra={
             "session_id": cmd.session_id,
+            "session_name": cmd.session_name,
             "reason": cmd.reason,
             "request_id": cmd.request_id,
         })
@@ -260,17 +267,13 @@ class RedisBridge:
             cmd.session_id, reason=cmd.reason,
         )
         if not stopped:
-            # No worker was tracked under this id. Publishing a
-            # stopped event anyway would reach the event consumer,
-            # which looks up sessions by slug first — and after a
-            # slug reclaim, the current owner is the new session,
-            # not the one this command was meant for. Skip.
             self._log.info("stop ignored; session not tracked",
                            extra={"session_id": cmd.session_id})
             return
 
         await self.publish_event(SessionStoppedEvent(
             session_id=cmd.session_id,
+            session_name=cmd.session_name,
             exit_code=0,
             reason=cmd.reason,
         ))

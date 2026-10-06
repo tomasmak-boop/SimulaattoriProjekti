@@ -126,6 +126,7 @@ class Command(BaseCommand):
         if session is None:
             log.warning("event for unknown session",
                         extra={"session_id": event.session_id,
+                               "session_name": event.session_name,
                                "kind": event.kind})
             return
 
@@ -177,14 +178,12 @@ class Command(BaseCommand):
 
 
 def _lookup_session(session_id: str) -> Session | None:
-    """Find a session by slug, falling back to its UUID string form.
+    """Find a session by its UUID.
 
-    Events carry the session's external_id, which is the slug when one
-    is set and the UUID otherwise.
+    Events carry the UUID in session_id and the display name in
+    session_name. Lookup is unambiguous even when a slug has been
+    reused across sessions.
     """
-    session = Session.objects.filter(slug=session_id).first()
-    if session is not None:
-        return session
     try:
         uuid.UUID(session_id)
     except (ValueError, TypeError):

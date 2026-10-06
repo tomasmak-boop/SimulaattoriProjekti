@@ -1,16 +1,16 @@
 """Gateway OPC UA server.
 
 Owns the aggregate address space. Each active session appears under
-Objects/Gateway/Sessions/<session_id>/. Mirrors are kept in a dict and
-updated as session events arrive.
+Objects/Gateway/Sessions/<session_name>/. Mirrors are kept in a dict
+keyed by session_id (UUID) and updated as session events arrive.
 
-Two ways mirrors get added:
+Mirrors are added two ways:
 
-  1. reconcile_existing() — at startup, scan Redis heartbeats. This is
-     the ground truth for "what workers are alive right now" and does not
-     depend on having seen the SessionReadyEvent.
-  2. run_event_loop() — consume the events stream for sessions that start
-     or stop while the gateway is running.
+  1. reconcile_existing() — at startup, scan Redis heartbeats. This
+     is the ground truth for "what workers are alive right now" and
+     does not depend on having seen the SessionReadyEvent.
+  2. run_event_loop() — consume the events stream for sessions that
+     start or stop while the gateway is running.
 
 Both paths converge on _add_mirror and _remove_mirror.
 """
@@ -62,7 +62,8 @@ class Gateway:
         self._mirrors_lock = asyncio.Lock()
 
         # Pending outbound writes to workers. The setter callback is
-        # synchronous; enqueueing here decouples it from the async write.
+        # synchronous; enqueueing here decouples it from the async
+        # write that actually reaches the worker.
         self._write_queue: asyncio.Queue[tuple[str, str, Any]] = asyncio.Queue()
         self._write_task: asyncio.Task | None = None
 
@@ -113,7 +114,8 @@ class Gateway:
                 await m.disconnect()
             except Exception:
                 log.exception("error disconnecting mirror",
-                              extra={"session_id": m.session_id})
+                              extra={"session_id": m.session_id,
+                                     "session_name": m.session_name})
 
         try:
             await self._server.stop()
@@ -125,13 +127,10 @@ class Gateway:
     async def reconcile_existing(self) -> None:
         """Scan Redis heartbeats and mirror every live worker.
 
-        Called once at startup. This is the correct, restart-safe way to
-        rebuild state; the event stream only covers transitions that
-        happen while the gateway is running.
-
-        Reads simulation_id from the heartbeat payload. Workers write it
-        there on every heartbeat, so a session created before the
-        gateway started is still discoverable.
+        Called once at startup. Restart-safe: workers publish their
+        simulation_id and session_name on every heartbeat, so a
+        session created before the gateway started is still
+        discoverable without having seen its SessionReadyEvent.
         """
         log.info("reconcile: starting")
         keys = await self._redis.keys(f"{REDIS_HEARTBEAT_PREFIX}*")
@@ -157,6 +156,7 @@ class Gateway:
             port = hb.get("port")
             pid = hb.get("pid", 0)
             sim_id = hb.get("simulation_id")
+            session_name = str(hb.get("session_name") or session_id)
             if port is None or not sim_id:
                 log.warning(
                     "reconcile: heartbeat missing port or simulation_id",
@@ -166,6 +166,7 @@ class Gateway:
 
             ev = SessionReadyEvent(
                 session_id=session_id,
+                session_name=session_name,
                 simulation_id=str(sim_id),
                 port=int(port),
                 pid=int(pid),
@@ -179,10 +180,9 @@ class Gateway:
     # --- event loop ---
 
     async def run_event_loop(self, stop: asyncio.Event) -> None:
-        # Create the consumer group starting from the beginning of the
-        # stream (id="0") so we don't miss events that arrived before we
-        # started. Combined with reconcile_existing this covers both the
-        # cold-start and restart cases.
+        # id="0" so events that arrived before the gateway started are
+        # not missed. Combined with reconcile_existing this covers both
+        # the cold-start and restart cases.
         try:
             await self._redis.xgroup_create(
                 REDIS_EVT_STREAM, GATEWAY_EVT_CONSUMER_GROUP,
@@ -250,13 +250,12 @@ class Gateway:
             f"opc.tcp://127.0.0.1:{ev.port}/{ev.simulation_id}/"
         )
 
-        # Retry the connect with backoff. The worker publishes its
-        # "ready" event only after the port is bound (see
-        # sim_runtime/opcua_adapter.py: run(on_ready=...) ), so under
-        # normal operation the first attempt succeeds. This retry
-        # covers the remaining cases: network hiccups, a gateway that
-        # reconciles a heartbeat a split second before the worker
-        # finishes binding, or a slow asyncua handshake.
+        # Retry with backoff. The worker publishes SessionReadyEvent
+        # only after the port is bound (see sim_runtime/opcua_adapter),
+        # so the first attempt normally succeeds. The retry covers the
+        # remaining cases: a gateway that reconciles a heartbeat a
+        # split second before the worker finishes binding, a slow
+        # asyncua handshake, transient network noise.
         #
         # A fresh WorkerMirror per attempt: a failed connect can leave
         # a half-open asyncua client, and reusing it tends to fail on
@@ -267,6 +266,7 @@ class Gateway:
         for attempt in range(1, max_attempts + 1):
             candidate = WorkerMirror(
                 session_id=ev.session_id,
+                session_name=ev.session_name,
                 simulation_id=ev.simulation_id,
                 worker_endpoint=worker_endpoint,
                 parent_folder=self._sessions_folder,
@@ -279,33 +279,31 @@ class Gateway:
                 mirror = candidate
                 break
             except SimulationRootNotFound as exc:
-                # Not a transient error — the worker is up but its
-                # address space doesn't have a discoverable root. Retry
-                # won't fix it.
+                # Not transient. The worker is up but its address space
+                # does not have a discoverable root.
                 log.error(
                     "worker has no discoverable simulation root",
-                    extra={"session_id": ev.session_id, "error": str(exc)},
+                    extra={"session_id": ev.session_id,
+                           "session_name": ev.session_name,
+                           "error": str(exc)},
                 )
                 return
             except Exception as exc:
                 if attempt >= max_attempts:
                     log.exception(
                         "failed to mirror worker after retries",
-                        extra={
-                            "session_id": ev.session_id,
-                            "attempts": max_attempts,
-                        },
+                        extra={"session_id": ev.session_id,
+                               "session_name": ev.session_name,
+                               "attempts": max_attempts},
                     )
                     return
                 delay = min(0.3 * attempt, 1.5)
                 log.info(
                     "mirror connect failed; retrying",
-                    extra={
-                        "session_id": ev.session_id,
-                        "attempt": attempt,
-                        "delay_seconds": delay,
-                        "error": type(exc).__name__,
-                    },
+                    extra={"session_id": ev.session_id,
+                           "attempt": attempt,
+                           "delay_seconds": delay,
+                           "error": type(exc).__name__},
                 )
                 await asyncio.sleep(delay)
 
@@ -314,8 +312,11 @@ class Gateway:
 
         async with self._mirrors_lock:
             self._mirrors[ev.session_id] = mirror
-        log.info("mirror added", extra={"session_id": ev.session_id})
-        
+        log.info("mirror added", extra={
+            "session_id": ev.session_id,
+            "session_name": ev.session_name,
+        })
+
     async def _remove_mirror(self, session_id: str) -> None:
         async with self._mirrors_lock:
             mirror = self._mirrors.pop(session_id, None)
@@ -325,8 +326,12 @@ class Gateway:
             await mirror.disconnect()
         except Exception:
             log.exception("error disconnecting mirror",
-                          extra={"session_id": session_id})
-        log.info("mirror removed", extra={"session_id": session_id})
+                          extra={"session_id": session_id,
+                                 "session_name": mirror.session_name})
+        log.info("mirror removed", extra={
+            "session_id": session_id,
+            "session_name": mirror.session_name,
+        })
 
     # --- write forwarding ---
 
@@ -346,5 +351,7 @@ class Gateway:
             except Exception:
                 log.exception(
                     "command forward failed",
-                    extra={"session_id": session_id, "command": command_name},
+                    extra={"session_id": session_id,
+                           "session_name": mirror.session_name,
+                           "command": command_name},
                 )
