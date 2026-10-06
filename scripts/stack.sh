@@ -289,8 +289,20 @@ print('|'.join([
 " 2>/dev/null || true)
 
     if [ -z "$parsed" ]; then
-        err "session create returned an unparseable response"
-        echo "$response"
+        err "session create returned a non-JSON response"
+        # Django renders its DEBUG error page as HTML. Dumping the
+        # whole thing to the terminal is useless; show a short head
+        # and point at the log for the full traceback.
+        case "$response" in
+            '<'*)
+                warn "response looks like Django's debug error page."
+                warn "Check the traceback:"
+                warn "    tail -60 .run/logs/django.log"
+                ;;
+            *)
+                echo "$response"
+                ;;
+        esac
         return 1
     fi
 
