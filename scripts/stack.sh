@@ -4,8 +4,6 @@
 # Starts worker pool, Django, event consumer, and gateway as detached
 # background processes. Waits for each to become ready, creates a
 # session via the REST API, and prints the CODESYS connection info.
-#
-# Usage: see usage() below.
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -16,28 +14,25 @@ PID_DIR="$RUN_DIR/pids"
 # ---------------------------------------------------------------------------
 # Load .env
 # ---------------------------------------------------------------------------
-# Reads $PROJECT_ROOT/.env if it exists. Variables already set in the shell
-# take precedence, so "SERVER_IP=1.2.3.4 ./scripts/stack.sh up" overrides the
+# Reads $PROJECT_ROOT/.env if it exists. Shell-set variables take
+# precedence, so "SERVER_IP=1.2.3.4 ./scripts/stack.sh up" overrides the
 # file for one run without editing it.
 #
-# Supported syntax: KEY=value, optional single or double quotes around the
-# value, blank lines, and # comments. No export prefix, no line continuation.
+# Supported syntax: KEY=value, optional single or double quotes, blank
+# lines, and # comments. No export prefix, no line continuation.
 if [ -f "$PROJECT_ROOT/.env" ]; then
     while IFS='=' read -r _key _value || [ -n "$_key" ]; do
-        # Trim leading and trailing whitespace from the key.
         _key="${_key#"${_key%%[![:space:]]*}"}"
         _key="${_key%"${_key##*[![:space:]]}"}"
         [ -z "$_key" ] && continue
         [ "${_key:0:1}" = "#" ] && continue
-        # Trim surrounding whitespace from the value.
         _value="${_value#"${_value%%[![:space:]]*}"}"
         _value="${_value%"${_value##*[![:space:]]}"}"
-        # Strip a single pair of matching quotes.
         case "$_value" in
             \"*\") _value="${_value#\"}"; _value="${_value%\"}" ;;
             \'*\') _value="${_value#\'}"; _value="${_value%\'}" ;;
         esac
-        # Only export if not already set — shell env wins.
+        # Shell env wins over .env.
         if [ -z "${!_key+x}" ]; then
             export "$_key=$_value"
         fi
@@ -45,7 +40,6 @@ if [ -f "$PROJECT_ROOT/.env" ]; then
     unset _key _value
 fi
 
-# Auto-detect server IP if not overridden
 if [ -z "${SERVER_IP:-}" ]; then
     SERVER_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 fi
@@ -83,7 +77,7 @@ start_service() {
     fi
     log "starting $name..."
     # setsid detaches into a new session so Ctrl-C on this script
-    # won't kill the service. stdin from /dev/null so it never blocks.
+    # won't kill the service.
     setsid "$@" > "$(logfile "$name")" 2>&1 < /dev/null &
     echo $! > "$(pidfile "$name")"
 }
@@ -166,7 +160,7 @@ cmd_up() {
 
     log "all services ready"
     echo
-    cmd_create "${1:-codesys test}"
+    cmd_create "$@"
 }
 
 cmd_down() {
@@ -203,8 +197,25 @@ cmd_status() {
     done
     echo
     echo "Listening ports:"
-    ss -tlnp 2>/dev/null | grep -E ":$GATEWAY_PORT|:$DJANGO_PORT|:${OPCUA_PORT_START:0:2}[0-9][0-9]" \
-        | awk '{print "  " $4}' || echo "  (none)"
+
+    local ports
+    ports=$(ss -tlnp 2>/dev/null | awk -v gw="$GATEWAY_PORT" \
+                                      -v dj="$DJANGO_PORT" \
+                                      -v ps="$OPCUA_PORT_START" \
+                                      -v pe="$OPCUA_PORT_END" '
+        /LISTEN/ {
+            n = split($4, addr, ":")
+            port = addr[n] + 0
+            if (port == gw || port == dj || (port >= ps && port <= pe)) {
+                print "  " $4
+            }
+        }')
+
+    if [ -z "$ports" ]; then
+        echo "  (none)"
+    else
+        echo "$ports"
+    fi
 }
 
 cmd_logs() {
@@ -223,22 +234,69 @@ cmd_logs() {
 
 cmd_create() {
     activate_venv
-    local label="${1:-codesys test}"
-    log "creating session (label: $label)..."
+
+    local slug=""
+    local label="codesys test"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --slug)
+                [ -n "${2:-}" ] || { err "--slug requires a value"; return 1; }
+                slug="$2"; shift 2 ;;
+            --slug=*)
+                slug="${1#--slug=}"; shift ;;
+            *)
+                label="$1"; shift ;;
+        esac
+    done
+
+    if [ -n "$slug" ]; then
+        log "creating session (slug: $slug, label: $label)..."
+    else
+        log "creating session (label: $label)..."
+    fi
+
+    # Build the JSON body in python so label content can't break the
+    # request when it contains quotes or backslashes.
+    local body
+    body=$(python - "$slug" "$label" <<'PY'
+import json, sys
+slug, label = sys.argv[1], sys.argv[2]
+payload = {"simulation_id": "cip", "label": label}
+if slug:
+    payload["slug"] = slug
+print(json.dumps(payload))
+PY
+)
 
     local response
     response=$(curl -sS -X POST "http://127.0.0.1:$DJANGO_PORT/api/sessions/" \
         -H 'Content-Type: application/json' \
-        -d "{\"simulation_id\": \"cip\", \"label\": \"$label\"}") || {
+        -d "$body") || {
         err "failed to POST to Django at 127.0.0.1:$DJANGO_PORT"
         return 1
     }
 
-    local session_id token
-    session_id=$(echo "$response" | python -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
-    token=$(echo "$response"      | python -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null || echo "")
+    local parsed session_id external_id slug_value token
+    parsed=$(echo "$response" | python -c "
+import sys, json
+d = json.load(sys.stdin)
+print('|'.join([
+    d.get('id', ''),
+    d.get('external_id', ''),
+    d.get('slug') or '',
+    d.get('token', ''),
+]))
+" 2>/dev/null || true)
 
-    if [ -z "$session_id" ] || [ "$session_id" = "None" ]; then
+    if [ -z "$parsed" ]; then
+        err "session create returned an unparseable response"
+        echo "$response"
+        return 1
+    fi
+
+    IFS='|' read -r session_id external_id slug_value token <<< "$parsed"
+
+    if [ -z "$session_id" ]; then
         err "session create returned no id"
         echo "$response"
         return 1
@@ -262,14 +320,28 @@ cmd_create() {
 
     echo
     echo "================================================================="
-    echo "  CODESYS connection info"
+    echo "  Session created"
     echo "================================================================="
-    echo "  Endpoint URL:  opc.tcp://$SERVER_IP:$GATEWAY_PORT/gateway/"
-    echo "  Session ID:    $session_id"
-    echo "  Token:         $token"
+    echo "  Endpoint URL:   opc.tcp://$SERVER_IP:$GATEWAY_PORT/gateway/"
+    echo "  Session UUID:   $session_id"
+    if [ -n "$slug_value" ]; then
+        echo "  Slug:           $slug_value"
+        echo "  OPC UA path:    Gateway.Sessions.$slug_value"
+    fi
+    echo "  Token:          $token"
     echo "================================================================="
     echo
-    echo "  Set GVL_UAClient.sSessionId := '$session_id' in CODESYS."
+    if [ -n "$slug_value" ]; then
+        echo "  CODESYS Data Sources path:"
+        echo "    Datasource.Gateway.Sessions.$slug_value.*"
+        echo
+        echo "  Recreate with the same slug to keep this path valid:"
+        echo "    ./scripts/stack.sh create --slug $slug_value \"next run\""
+    else
+        echo "  Tip: pass --slug NAME to get a stable OPC UA path that"
+        echo "       survives session re-creation:"
+        echo "    ./scripts/stack.sh create --slug cip_live \"next run\""
+    fi
     echo
 }
 
@@ -329,13 +401,19 @@ usage() {
 Usage: scripts/stack.sh <command> [args]
 
 Commands:
-  up [label]       Start all services, wait, and create a session.
+  up [--slug NAME] [label]
+                   Start all services, wait, and create a session.
+                   --slug NAME gives the session a stable OPC UA
+                   identifier so the CODESYS Data Sources tree does
+                   not need updating between runs.
                    Default label: "codesys test".
   down             Stop all services and stray workers.
-  reset [label]    Down + wipe Redis + up. Fresh state.
+  reset [--slug NAME] [label]
+                   Down + wipe Redis + up. Fresh state.
   status           Show service states and listening ports.
   logs [-f]        Show last lines of each service log, or tail -f.
-  create [label]   Create another session without touching services.
+  create [--slug NAME] [label]
+                   Create another session without touching services.
   test [session]   Run CLI round-trip test on a session (default: first).
   shell [args]     Open a Python shell inside the venv.
   cli [args]       Run tools/opcua_cli.py against the gateway.
@@ -348,9 +426,9 @@ Environment overrides:
   OPCUA_PORT_END   default: 5100
 
 Examples:
-  ./scripts/stack.sh up
+  ./scripts/stack.sh up --slug cip_live
   ./scripts/stack.sh test
-  ./scripts/stack.sh create "alice tank"
+  ./scripts/stack.sh create --slug alice_cip "alice tank"
   ./scripts/stack.sh cli --list-sessions
   ./scripts/stack.sh logs -f
   ./scripts/stack.sh down
