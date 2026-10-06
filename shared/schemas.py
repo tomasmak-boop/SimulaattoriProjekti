@@ -1,12 +1,10 @@
 """Message schemas for the Redis Streams boundary.
 
-Every command and every event is one of these models. Django and the daemon
-import the same definitions, so a change on one side that isn't mirrored on
-the other fails at deserialization with a clear error.
+Every command and every event is one of these models. Django and the
+daemon import the same definitions, so a field added on one side but
+not the other fails at parse time rather than being silently dropped.
 
-Base models use extra="forbid" so undeclared fields raise at construction
-time rather than being silently dropped. This catches drift between
-producers and consumers immediately.
+Base models use extra="forbid" to enforce this.
 """
 
 from __future__ import annotations
@@ -22,8 +20,6 @@ def _now() -> datetime:
 
 
 class _StrictBase(BaseModel):
-    """Base for all messages. Rejects undeclared fields loudly."""
-
     model_config = ConfigDict(extra="forbid")
 
 
@@ -59,6 +55,7 @@ class StopSessionCommand(_CommandBase):
         "admin_action",
         "replaced_by_new_session",
     ] = "user_request"
+
 
 class PingCommand(_CommandBase):
     kind: Literal["ping"] = "ping"
