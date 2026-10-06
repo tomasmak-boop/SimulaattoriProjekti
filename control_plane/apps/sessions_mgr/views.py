@@ -18,6 +18,7 @@ from __future__ import annotations
 from django.conf import settings
 from django.db import IntegrityError
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -138,12 +139,12 @@ def _create_session(request):
             detail={"error": "could not reach command bus"},
         )
         return Response(
-            SessionDetailSerializer(session, context=_ctx(request)).data,
+            SessionDetailSerializer(session, context=_ctx()).data,
             status=status.HTTP_503_SERVICE_UNAVAILABLE,
         )
 
     return Response(
-        SessionDetailSerializer(session, context=_ctx(request)).data,
+        SessionDetailSerializer(session, context=_ctx()).data,
         status=status.HTTP_201_CREATED,
     )
 
@@ -159,12 +160,12 @@ def session_detail(request, token: str):
 
     if request.method == "GET":
         return Response(
-            SessionDetailSerializer(session, context=_ctx(request)).data
+            SessionDetailSerializer(session, context=_ctx()).data
         )
 
     if session.is_terminal:
         return Response(
-            SessionDetailSerializer(session, context=_ctx(request)).data,
+            SessionDetailSerializer(session, context=_ctx()).data,
             status=status.HTTP_200_OK,
         )
 
@@ -183,7 +184,7 @@ def session_detail(request, token: str):
         )
 
     return Response(
-        SessionDetailSerializer(session, context=_ctx(request)).data
+        SessionDetailSerializer(session, context=_ctx()).data
     )
 
 
@@ -206,28 +207,29 @@ def session_events(request, token: str):
 def _reclaim_slug(slug: str) -> None:
     """Release `slug` from any existing session so a new one can take it.
 
-    Stops the prior session if still live, then clears its slug field.
-    Raises if the stop command cannot be published, in which case the
-    prior row is left untouched so a retry can succeed later.
+    Stops the prior session if still live, then clears its slug field
+    and moves it to a terminal state. Raises if the stop command
+    cannot be published, in which case the prior row is left untouched
+    so a retry can succeed later.
     """
     prior = Session.objects.filter(slug=slug).first()
     if prior is None:
         return
 
     if not prior.is_terminal:
-        prior.status = Session.STATUS_STOPPING
-        prior.save(update_fields=["status"])
-        _record_event(prior, SessionEvent.EVENT_STOPPING, {
-            "reason": "replaced_by_new_session",
-            "replacement_slug": slug,
-        })
         orchestrator.request_stop(prior, reason="replaced_by_new_session")
 
     prior.slug = None
-    prior.save(update_fields=["slug"])
+    prior.status = Session.STATUS_STOPPED
+    prior.stopped_at = timezone.now()
+    prior.save(update_fields=["slug", "status", "stopped_at"])
+
+    _record_event(prior, SessionEvent.EVENT_STOPPED, {
+        "reason": "replaced_by_new_session",
+    })
 
 
-def _ctx(request) -> dict:  # noqa: ARG001
+def _ctx() -> dict:
     return {"gateway_host": getattr(settings, "GATEWAY_PUBLIC_HOST", "")}
 
 
