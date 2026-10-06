@@ -30,7 +30,7 @@ from django.db import models
 # keeps CODESYS Data Sources stable across session re-creations.
 _SLUG_PATTERN = r"^[a-z][a-z0-9_]{0,63}$"
 _SLUG_RE = re.compile(_SLUG_PATTERN)
-_slug_validator = RegexValidator(
+slug_validator = RegexValidator(
     regex=_SLUG_PATTERN,
     message=(
         "slug must be lowercase, start with a letter, and contain only "
@@ -107,7 +107,7 @@ class Session(models.Model):
         unique=True,
         null=True,
         blank=True,
-        validators=[_slug_validator],
+        validators=[slug_validator],
     )
 
     label = models.CharField(max_length=128, blank=True)
