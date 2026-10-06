@@ -2,31 +2,29 @@
 
 Consumes StartSessionCommand and StopSessionCommand from the command
 stream, dispatches them to the manager, and publishes lifecycle events
-back on the event stream. The daemon also uses this bridge to publish
-events it generates itself — worker crashes, reconciliation actions,
-shutdown notices.
+back on the event stream. The daemon also publishes events it generates
+itself — worker crashes, reconciliation actions, shutdown notices.
 
-Why streams and not pub/sub: a daemon restart must not lose commands
-that were published while it was down. With streams, unacked messages
-remain in the consumer group's pending list and are delivered again on
-reconnect. Pub/sub would silently drop them.
+Streams, not pub/sub: a daemon restart must not lose commands that were
+published while it was down. Unacked messages stay in the consumer
+group's pending list and are delivered again on reconnect. Pub/sub
+would silently drop them.
 
 At-least-once delivery means command handlers must be idempotent.
-Starting an already-tracked session raises AlreadyRunningError, which
-the bridge catches and translates to a SessionFailedEvent rather than
-retrying forever. Stopping an untracked session returns False, which
-is harmless.
+Starting an already-tracked session raises AlreadyRunningError; the
+bridge logs and ignores it rather than retrying. Stopping an untracked
+session returns False; the bridge skips the stopped event, since
+publishing it would risk the event consumer applying it to a different
+session that now owns the same slug.
 
-The consumer name includes the daemon PID. A restarted daemon reads as
-a fresh consumer, so its own previous pending messages are reclaimed
-via XAUTOCLAIM on startup rather than sitting in the old consumer's
-pending list forever.
+The consumer name includes the daemon PID, so a restart reads as a
+fresh consumer. Messages left pending by the previous incarnation are
+reclaimed via XAUTOCLAIM on startup.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 from typing import Any
 
@@ -62,17 +60,8 @@ from worker_pool.manager import (
 log = get_logger(__name__)
 
 
-# How long XREADGROUP blocks waiting for a new message. Shorter values
-# mean the loop reacts to stop events faster; longer values mean less
-# Redis chatter. 2 s is a reasonable middle.
 _READ_BLOCK_MS = 2000
-
-# How often to attempt XAUTOCLAIM of messages left pending by a
-# previous daemon incarnation that died mid-handler.
 _CLAIM_INTERVAL_SEC = 60.0
-
-# Idle threshold for XAUTOCLAIM. A message pending for longer than
-# this is considered abandoned by its original consumer.
 _CLAIM_MIN_IDLE_MS = 120_000
 
 
@@ -92,6 +81,7 @@ class RedisBridge:
         self._log = log
         # None = unknown; True/False once we've tried once.
         self._xautoclaim_supported: bool | None = None
+
     # ------------------------------------------------------------------
     # Setup
     # ------------------------------------------------------------------
@@ -100,9 +90,9 @@ class RedisBridge:
         """Create the consumer group if it does not exist.
 
         id="0" starts delivery from the beginning of the stream, so a
-        daemon that restarts after being down for a while still sees
-        any unacked commands. MKSTREAM creates the stream itself if
-        nothing has ever published to it.
+        daemon that restarts after being down still sees any unacked
+        commands. MKSTREAM creates the stream if nothing has published
+        to it yet.
         """
         try:
             await self._redis.xgroup_create(
@@ -145,9 +135,9 @@ class RedisBridge:
         """Consume commands until the stop event is set.
 
         Handles one command at a time. Start and stop operations are
-        fast enough (sub-second) that concurrency would add complexity
-        without benefit. If a slow Redis write stalls the loop, the
-        next command waits — which is the desired backpressure.
+        sub-second, so concurrency would add complexity without benefit.
+        If a slow Redis write stalls the loop, the next command waits —
+        the desired backpressure.
         """
         last_claim = 0.0
 
@@ -174,7 +164,6 @@ class RedisBridge:
                 for msg_id, fields in messages:
                     await self._handle_message(msg_id, fields)
 
-            # Periodically try to reclaim abandoned pending messages.
             now = asyncio.get_event_loop().time()
             if now - last_claim > _CLAIM_INTERVAL_SEC:
                 last_claim = now
@@ -255,7 +244,7 @@ class RedisBridge:
             simulation_id=record.simulation_id,
             port=record.port,
             pid=record.pid,
-            systemd_unit="",   # not used with subprocess spawning
+            systemd_unit="",
             advertised_endpoint="",
             request_id=cmd.request_id,
         ))
@@ -271,12 +260,18 @@ class RedisBridge:
             cmd.session_id, reason=cmd.reason,
         )
         if not stopped:
+            # No worker was tracked under this id. Publishing a
+            # stopped event anyway would reach the event consumer,
+            # which looks up sessions by slug first — and after a
+            # slug reclaim, the current owner is the new session,
+            # not the one this command was meant for. Skip.
             self._log.info("stop ignored; session not tracked",
                            extra={"session_id": cmd.session_id})
+            return
 
         await self.publish_event(SessionStoppedEvent(
             session_id=cmd.session_id,
-            exit_code=0 if stopped else None,
+            exit_code=0,
             reason=cmd.reason,
         ))
 
@@ -288,9 +283,9 @@ class RedisBridge:
         """Take over messages abandoned by a previous consumer.
 
         XAUTOCLAIM requires Redis 6.2+. On older servers the command
-        returns an error; we detect that once and disable the feature
-        for the lifetime of the bridge. Recovery is a safety net for
-        daemon crashes mid-handle, not a correctness requirement.
+        fails and we disable the feature for the lifetime of the
+        bridge. Recovery is a safety net for daemon crashes mid-handle,
+        not a correctness requirement.
         """
         if self._xautoclaim_supported is False:
             return
@@ -321,7 +316,8 @@ class RedisBridge:
         if self._xautoclaim_supported is None:
             self._xautoclaim_supported = True
 
-        # asyncua-client returns (next_cursor, messages, deleted_ids)
+        # redis-py returns (next_cursor, messages) on Redis 6.2 and
+        # (next_cursor, messages, deleted_ids) on Redis 7.0+.
         if not result:
             return
         _, messages, *_ = result
@@ -332,7 +328,7 @@ class RedisBridge:
                        extra={"count": len(messages)})
         for msg_id, fields in messages:
             await self._handle_message(msg_id, fields)
-            
+
     # ------------------------------------------------------------------
     # Ack helper
     # ------------------------------------------------------------------
@@ -343,7 +339,6 @@ class RedisBridge:
                 REDIS_CMD_STREAM, CMD_CONSUMER_GROUP, msg_id,
             )
         except RedisError:
-            # If ack fails, the message remains pending and will be
-            # reclaimed later. Not fatal.
+            # Message stays pending and is reclaimed later. Not fatal.
             self._log.warning("xack failed",
                               extra={"msg_id": msg_id})
