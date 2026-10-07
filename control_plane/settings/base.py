@@ -71,6 +71,7 @@ INSTALLED_APPS = [
     "channels",
     "rest_framework",
     "control_plane.apps.sessions_mgr",
+    "control_plane.apps.dashboard",
 ]
 
 

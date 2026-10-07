@@ -1,7 +1,7 @@
 """Structured JSON logging shared by Django and the worker pool.
 
-One format means one parser, one filter set, and one way to correlate log
-lines across processes by session_id.
+One format means one parser, one filter set, and one way to correlate
+log lines across processes by session_id.
 """
 
 from __future__ import annotations
@@ -13,14 +13,20 @@ import time
 from typing import Any
 
 
+_STANDARD_ATTRS = frozenset({
+    "name", "msg", "args", "levelname", "levelno", "pathname", "filename",
+    "module", "exc_info", "exc_text", "stack_info", "lineno", "funcName",
+    "created", "msecs", "relativeCreated", "thread", "threadName",
+    "processName", "process", "taskName", "message", "asctime",
+})
+
+
 class JSONFormatter(logging.Formatter):
     """Emit one JSON object per record, newline-delimited.
 
-    JSON over logfmt or plain text: it parses unambiguously, handles nested
-    fields, and every log aggregator expects it by default.
+    Any keyword passed via ``extra=`` becomes a top-level field. Standard
+    LogRecord attributes are filtered out; everything else is included.
     """
-
-    _CONTEXT_KEYS = ("session_id", "simulation_id", "pid", "port", "request_id", "line")
 
     def format(self, record: logging.LogRecord) -> str:
         payload: dict[str, Any] = {
@@ -30,12 +36,17 @@ class JSONFormatter(logging.Formatter):
             "logger": record.name,
             "msg": record.getMessage(),
         }
-        for key in self._CONTEXT_KEYS:
-            value = getattr(record, key, None)
-            if value is not None:
-                payload[key] = value
+
+        for key, value in record.__dict__.items():
+            if key in _STANDARD_ATTRS:
+                continue
+            if value is None:
+                continue
+            payload[key] = value
+
         if record.exc_info:
             payload["exc"] = self.formatException(record.exc_info)
+
         return json.dumps(payload, separators=(",", ":"), default=str)
 
 

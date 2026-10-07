@@ -308,16 +308,17 @@ class WorkerPoolManager:
     # Reap and reconcile
     # ------------------------------------------------------------------
 
-    async def reap_dead_workers(self) -> list[str]:
+    async def reap_dead_workers(self) -> list[SpawnedWorker]:
         """Detect and clean up workers whose processes have exited.
 
-        Called periodically by the daemon. Returns session IDs that
-        were reaped.
+        Called periodically by the daemon. Returns the records that
+        were reaped so the caller can publish events that carry both
+        identifiers.
         """
         async with self._lock:
             candidates = list(self._workers.values())
 
-        reaped: list[str] = []
+        reaped: list[SpawnedWorker] = []
         for record in candidates:
             if _pid_alive(record.pid):
                 continue
@@ -333,9 +334,9 @@ class WorkerPoolManager:
             task = self._log_tasks.pop(record.session_id, None)
             if task is not None:
                 task.cancel()
-            reaped.append(record.session_id)
+            reaped.append(record)
         return reaped
-
+    
     async def reconcile_on_startup(self) -> None:
         """Adopt workers that survived a daemon restart; drop dead ones.
 

@@ -95,14 +95,16 @@ async def _reaper_loop(
             log.exception("reaper pass failed")
             continue
 
-        for session_id in reaped:
-            log.warning("worker died unexpectedly",
-                        extra={"session_id": session_id})
+        for record in reaped:
+            log.warning("worker died unexpectedly", extra={
+                "session_id": record.session_id,
+                "session_name": record.session_name,
+            })
             await bridge.publish_event(SessionFailedEvent(
-                session_id=session_id,
+                session_id=record.session_id,
+                session_name=record.session_name,
                 error="worker process exited without a stop command",
             ))
-
 
 async def _idle_loop(
     *,
@@ -131,6 +133,7 @@ async def _idle_loop(
         now = time.time()
         for record in manager.active_sessions():
             session_id = record["session_id"]
+            session_name = record["session_name"]
             try:
                 idle_raw = await redis.get(f"cip:idle:{session_id}")
             except Exception:
@@ -151,6 +154,7 @@ async def _idle_loop(
                 log.info(
                     "stopping idle session",
                     extra={"session_id": session_id,
+                           "session_name": session_name,
                            "idle_seconds": round(idle_secs, 1)},
                 )
                 stopped = await manager.stop_worker(
@@ -159,9 +163,9 @@ async def _idle_loop(
                 if stopped:
                     await bridge.publish_event(SessionStoppedEvent(
                         session_id=session_id,
+                        session_name=session_name,
                         reason="idle_timeout",
                     ))
-
 
 # ---------------------------------------------------------------------------
 # Main
