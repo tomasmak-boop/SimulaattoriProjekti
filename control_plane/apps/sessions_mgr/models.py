@@ -118,6 +118,7 @@ class Session(models.Model):
         max_length=16, choices=STATUS_CHOICES, default=STATUS_PENDING,
     )
     port = models.IntegerField(null=True, blank=True)
+    http_port = models.IntegerField(null=True, blank=True)
     pid = models.IntegerField(null=True, blank=True)
     advertised_endpoint = models.CharField(max_length=256, blank=True)
 

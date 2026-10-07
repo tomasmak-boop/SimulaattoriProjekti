@@ -74,6 +74,16 @@ class PingCommand(_CommandBase):
 class _EventBase(_StrictBase):
     occurred_at: datetime = Field(default_factory=_now)
 
+class SessionReadyEvent(_EventBase):
+    """Emitted by the worker itself once its OPC UA port is bound."""
+
+    kind: Literal["session_ready"] = "session_ready"
+    session_id: str
+    session_name: str
+    simulation_id: str
+    port: int
+    http_port: int
+    pid: int
 
 class SessionStartedEvent(_EventBase):
     """Emitted by the daemon when a worker process is spawned."""

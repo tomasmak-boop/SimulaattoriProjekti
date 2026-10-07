@@ -21,6 +21,10 @@ client and connects over loopback. So bind_host defaults to 127.0.0.1
 and advertise_host defaults to the same. Set advertise_host to a
 different value only if a client must reach the worker directly.
 
+The HTTP dashboard binds to 127.0.0.1 as well: it is proxied through
+Django, so it is not exposed on the network. SessionReadyEvent carries
+the dashboard's port so the control plane can reach it over loopback.
+
 SessionReadyEvent is published by the adapter's on_ready callback,
 which fires once the OPC UA port is actually bound. Publishing before
 bind caused a race where the gateway tried to connect to a socket that
@@ -96,7 +100,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "at a different address than it binds to.",
     )
 
-    p.add_argument("--http-host", default="0.0.0.0")
+    p.add_argument(
+        "--http-host", default="127.0.0.1",
+        help="Interface to bind the HTTP dashboard to. Default 127.0.0.1 — "
+             "the dashboard is proxied through Django and should not be "
+             "exposed directly.",
+    )
     p.add_argument("--http-port", type=int, default=None,
                    help=f"Defaults to opcua_port + {HTTP_PORT_OFFSET}.")
     p.add_argument("--config", default="{}",
@@ -180,6 +189,7 @@ async def _publish_ready(
     session_name: str,
     simulation_id: str,
     port: int,
+    http_port: int,
 ) -> None:
     try:
         ready = SessionReadyEvent(
@@ -187,6 +197,7 @@ async def _publish_ready(
             session_name=session_name,
             simulation_id=simulation_id,
             port=port,
+            http_port=http_port,
             pid=os.getpid(),
         )
         await r.xadd(
@@ -274,6 +285,7 @@ async def _run(args: argparse.Namespace) -> int:
         "simulation_id": args.simulation_id,
         "endpoint": adapter.endpoint,
         "bind_host": bind_host,
+        "http_host": args.http_host,
         "http_port": http_port,
         "pid": os.getpid(),
     })
@@ -299,6 +311,7 @@ async def _run(args: argparse.Namespace) -> int:
             session_name=args.session_name,
             simulation_id=args.simulation_id,
             port=args.opcua_port,
+            http_port=http_port,
         )
 
     failed = False

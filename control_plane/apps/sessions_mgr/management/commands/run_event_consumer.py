@@ -147,9 +147,13 @@ class Command(BaseCommand):
             })
 
         elif isinstance(event, SessionReadyEvent):
-            # The worker is accepting connections now.
+            # The worker is accepting connections now. Record the
+            # dashboard port so the control plane can proxy to it.
+            session.http_port = event.http_port
+            session.save(update_fields=["http_port"])
             _record(session, SessionEvent.EVENT_READY, {
                 "port": event.port,
+                "http_port": event.http_port,
                 "pid": event.pid,
             })
 
