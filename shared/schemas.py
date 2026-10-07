@@ -1,12 +1,14 @@
 """Message schemas for the Redis Streams boundary.
 
-Every command and every event is one of these models. Django and the daemon
-import the same definitions, so a change on one side that isn't mirrored on
-the other fails at deserialization with a clear error.
+Every command and every event is one of these models. Django and the
+daemon import the same definitions, so a field added on one side but
+not the other fails at parse time rather than being silently dropped.
 
-Base models use extra="forbid" so undeclared fields raise at construction
-time rather than being silently dropped. This catches drift between
-producers and consumers immediately.
+Session identification is split: ``session_id`` is the UUID, used for
+database lookups and Redis keys; ``session_name`` is the slug when one
+is set, otherwise the UUID, and is what appears in the OPC UA address
+space. The two can diverge when a slug is reused, and identity is
+always the UUID.
 """
 
 from __future__ import annotations
@@ -22,8 +24,6 @@ def _now() -> datetime:
 
 
 class _StrictBase(BaseModel):
-    """Base for all messages. Rejects undeclared fields loudly."""
-
     model_config = ConfigDict(extra="forbid")
 
 
@@ -39,10 +39,11 @@ class _CommandBase(_StrictBase):
 class StartSessionCommand(_CommandBase):
     kind: Literal["start_session"] = "start_session"
     session_id: str
+    session_name: str
     simulation_id: str
     config_params: dict[str, Any] = Field(default_factory=dict)
 
-    @field_validator("session_id", "simulation_id")
+    @field_validator("session_id", "session_name", "simulation_id")
     @classmethod
     def _non_empty(cls, v: str) -> str:
         if not v or len(v) > 128:
@@ -53,7 +54,13 @@ class StartSessionCommand(_CommandBase):
 class StopSessionCommand(_CommandBase):
     kind: Literal["stop_session"] = "stop_session"
     session_id: str
-    reason: Literal["user_request", "idle_timeout", "admin_action"] = "user_request"
+    session_name: str
+    reason: Literal[
+        "user_request",
+        "idle_timeout",
+        "admin_action",
+        "replaced_by_new_session",
+    ] = "user_request"
 
 
 class PingCommand(_CommandBase):
@@ -73,6 +80,7 @@ class SessionStartedEvent(_EventBase):
 
     kind: Literal["session_started"] = "session_started"
     session_id: str
+    session_name: str
     simulation_id: str
     port: int
     pid: int
@@ -86,14 +94,17 @@ class SessionReadyEvent(_EventBase):
 
     kind: Literal["session_ready"] = "session_ready"
     session_id: str
+    session_name: str
     simulation_id: str
     port: int
+    http_port: int
     pid: int
 
 
 class SessionStoppedEvent(_EventBase):
     kind: Literal["session_stopped"] = "session_stopped"
     session_id: str
+    session_name: str
     exit_code: int | None = None
     reason: str = "user_request"
 
@@ -101,6 +112,7 @@ class SessionStoppedEvent(_EventBase):
 class SessionFailedEvent(_EventBase):
     kind: Literal["session_failed"] = "session_failed"
     session_id: str
+    session_name: str
     error: str
 
 

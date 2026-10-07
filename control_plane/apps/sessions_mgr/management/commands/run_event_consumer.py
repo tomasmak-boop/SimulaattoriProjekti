@@ -1,10 +1,9 @@
 """Consume lifecycle events from the daemon and update the database.
 
-Runs as a long-lived process alongside the control plane. Reads from
-the events stream using a consumer group, updates the Session row
-described by each event, writes a SessionEvent row, and XACKs.
-
-Run as a systemd service in production. For development:
+Long-lived process. Reads the events stream via a consumer group,
+updates the corresponding Session row, appends a SessionEvent, and
+XACKs. Run as a systemd service in production, or by hand during
+development:
 
     python manage.py run_event_consumer
 """
@@ -12,7 +11,7 @@ Run as a systemd service in production. For development:
 from __future__ import annotations
 
 import asyncio
-import json
+import uuid
 
 import redis.asyncio as aioredis
 from django.conf import settings
@@ -123,10 +122,11 @@ class Command(BaseCommand):
     def _apply(self, event) -> None:
         close_old_connections()
 
-        session = Session.objects.filter(id=event.session_id).first()
+        session = _lookup_session(event.session_id)
         if session is None:
             log.warning("event for unknown session",
                         extra={"session_id": event.session_id,
+                               "session_name": event.session_name,
                                "kind": event.kind})
             return
 
@@ -147,9 +147,13 @@ class Command(BaseCommand):
             })
 
         elif isinstance(event, SessionReadyEvent):
-            # The worker is actually accepting connections now.
+            # The worker is accepting connections now. Record the
+            # dashboard port so the control plane can proxy to it.
+            session.http_port = event.http_port
+            session.save(update_fields=["http_port"])
             _record(session, SessionEvent.EVENT_READY, {
                 "port": event.port,
+                "http_port": event.http_port,
                 "pid": event.pid,
             })
 
@@ -175,6 +179,20 @@ class Command(BaseCommand):
             _record(session, SessionEvent.EVENT_FAILED, {
                 "error": event.error,
             })
+
+
+def _lookup_session(session_id: str) -> Session | None:
+    """Find a session by its UUID.
+
+    Events carry the UUID in session_id and the display name in
+    session_name. Lookup is unambiguous even when a slug has been
+    reused across sessions.
+    """
+    try:
+        uuid.UUID(session_id)
+    except (ValueError, TypeError):
+        return None
+    return Session.objects.filter(id=session_id).first()
 
 
 def _record(session: Session, event: str, detail: dict) -> None:

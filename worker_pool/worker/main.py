@@ -9,19 +9,26 @@ One worker runs exactly one simulation session:
     5. Runs the OPC UA tick loop until SIGTERM
     6. Cleans up (heartbeat key, idle key, PID file) before exit
 
-Run by the daemon as a subprocess (see worker_pool/manager.py). Can also
-be run by hand for development; see --help.
+Run by the daemon as a subprocess (see worker_pool/manager.py). Can
+also be run by hand for development; see --help.
+
+session_id is the UUID (identity for Redis keys and PID files);
+session_name is the slug or UUID and is what the gateway uses for the
+OPC UA folder. They are always passed together by the daemon.
 
 Bind vs advertise: workers are internal — the gateway is their only
-client, and it connects over loopback. So the default bind_host is
-127.0.0.1, and advertise_host defaults to the same. Set advertise_host
-to a different value only if a client needs to reach the worker
-directly (rare; the gateway is the intended entry point).
+client and connects over loopback. So bind_host defaults to 127.0.0.1
+and advertise_host defaults to the same. Set advertise_host to a
+different value only if a client must reach the worker directly.
 
-Ready signalling: SessionReadyEvent is published by the adapter's
-on_ready callback, which fires once the OPC UA port is actually bound.
-Publishing before bind caused a race where the gateway tried to connect
-to a socket that wasn't listening yet and gave up.
+The HTTP dashboard binds to 127.0.0.1 as well: it is proxied through
+Django, so it is not exposed on the network. SessionReadyEvent carries
+the dashboard's port so the control plane can reach it over loopback.
+
+SessionReadyEvent is published by the adapter's on_ready callback,
+which fires once the OPC UA port is actually bound. Publishing before
+bind caused a race where the gateway tried to connect to a socket that
+was not listening yet.
 """
 
 from __future__ import annotations
@@ -59,8 +66,7 @@ from sim_runtime.registry import SimulationRegistry
 log = get_logger(__name__)
 
 
-# Fallback PID directory when the configured one is not writable (e.g. dev
-# runs outside systemd). Real deploys use PID_DIR.
+# Fallback when PID_DIR is not writable — dev runs outside systemd.
 _FALLBACK_PID_DIR = Path("/tmp/cip-sim-pids")
 
 
@@ -70,15 +76,17 @@ _FALLBACK_PID_DIR = Path("/tmp/cip-sim-pids")
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Run one simulation worker.")
-    p.add_argument("--session-id", required=True)
+    p.add_argument("--session-id", required=True,
+                   help="Session UUID. Used for Redis keys and PID files.")
+    p.add_argument("--session-name", required=True,
+                   help="Slug or UUID. Used as the OPC UA folder name.")
     p.add_argument("--simulation-id", required=True)
     p.add_argument("--opcua-port", type=int, required=True)
 
-    # Two separate concepts. bind_host is the interface the socket is
-    # attached to; advertise_host is what goes into the OPC UA
-    # discovery response. They default to the same value (loopback) so
-    # the gateway can reach the worker and any client that happens to
-    # see the URL can too.
+    # bind_host is the interface the socket is attached to;
+    # advertise_host is what goes into the OPC UA discovery response.
+    # They default to the same value so the gateway can reach the
+    # worker and any client that happens to see the URL can too.
     p.add_argument(
         "--bind-host", default="127.0.0.1",
         help="Interface to bind the OPC UA socket to. Default: 127.0.0.1 "
@@ -92,7 +100,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "at a different address than it binds to.",
     )
 
-    p.add_argument("--http-host", default="0.0.0.0")
+    p.add_argument(
+        "--http-host", default="127.0.0.1",
+        help="Interface to bind the HTTP dashboard to. Default 127.0.0.1 — "
+             "the dashboard is proxied through Django and should not be "
+             "exposed directly.",
+    )
     p.add_argument("--http-port", type=int, default=None,
                    help=f"Defaults to opcua_port + {HTTP_PORT_OFFSET}.")
     p.add_argument("--config", default="{}",
@@ -107,7 +120,7 @@ def _parse_config(raw: str) -> dict:
         raise SystemExit(f"--config is not valid JSON: {exc}") from exc
     if not isinstance(parsed, dict):
         raise SystemExit("--config must be a JSON object")
-    # Accept either {"params": {...}} or a flat dict; flat is treated as params.
+    # Accept either {"params": {...}} or a flat dict; flat is params.
     return parsed.get("params", parsed)
 
 
@@ -119,25 +132,12 @@ async def _heartbeat_loop(
     r: aioredis.Redis,
     *,
     session_id: str,
+    session_name: str,
     simulation_id: str,
     port: int,
     adapter: OPCUAAdapter,
     stop: asyncio.Event,
 ) -> None:
-    """Publish worker liveness and idle timestamp to Redis every interval.
-
-    Two keys, both with TTL so a crash cleans up automatically:
-
-        cip:hb:<sid>    JSON heartbeat, refreshed every HEARTBEAT_INTERVAL
-        cip:idle:<sid>  Unix timestamp of the last external OPC UA activity
-
-    The heartbeat payload includes simulation_id so the gateway can
-    discover what plugin a session is running when it reconciles on
-    startup, without needing a separate metadata key.
-
-    The first heartbeat is written immediately so the worker is visible
-    to the gateway and to reconciliation without an interval-long delay.
-    """
     hb_key = f"{REDIS_HEARTBEAT_PREFIX}{session_id}"
     idle_key = f"{REDIS_IDLE_PREFIX}{session_id}"
 
@@ -156,6 +156,7 @@ async def _heartbeat_loop(
             "pid": os.getpid(),
             "port": port,
             "simulation_id": simulation_id,
+            "session_name": session_name,
             "uptime": round(time.monotonic() - start_mono, 1),
             "requests": count,
         })
@@ -166,13 +167,12 @@ async def _heartbeat_loop(
         except RedisError:
             log.exception("heartbeat write failed; will retry next interval")
 
-    # Immediate first heartbeat.
     await write_heartbeat()
 
     while not stop.is_set():
         try:
             await asyncio.wait_for(stop.wait(), timeout=HEARTBEAT_INTERVAL)
-            return  # stop was set during the wait
+            return
         except asyncio.TimeoutError:
             pass
         await write_heartbeat()
@@ -186,21 +186,18 @@ async def _publish_ready(
     r: aioredis.Redis,
     *,
     session_id: str,
+    session_name: str,
     simulation_id: str,
     port: int,
+    http_port: int,
 ) -> None:
-    """Publish SessionReadyEvent.
-
-    Called by the adapter's on_ready callback once the OPC UA port is
-    actually bound and the server is accepting connections. Publishing
-    earlier (before bind) is what caused the gateway to race on
-    ConnectionRefusedError.
-    """
     try:
         ready = SessionReadyEvent(
             session_id=session_id,
+            session_name=session_name,
             simulation_id=simulation_id,
             port=port,
+            http_port=http_port,
             pid=os.getpid(),
         )
         await r.xadd(
@@ -217,11 +214,10 @@ async def _publish_ready(
 # ---------------------------------------------------------------------------
 
 def _write_pid_file(session_id: str) -> Path | None:
-    """Write our PID to a well-known path. Returns the path, or None on failure.
+    """Write our PID under PID_DIR, or the fallback. None on failure.
 
-    The daemon uses PID files only as an advisory signal; Redis heartbeats
-    are the authoritative liveness check. If we cannot create the file
-    (permissions, unwritable directory), we log and continue.
+    The daemon uses PID files only as an advisory signal; Redis
+    heartbeats are the authoritative liveness check.
     """
     for candidate in (Path(PID_DIR), _FALLBACK_PID_DIR):
         try:
@@ -260,7 +256,6 @@ async def _run(args: argparse.Namespace) -> int:
         args.opcua_port + HTTP_PORT_OFFSET
     )
 
-    # advertise_host defaults to bind_host when not given.
     bind_host = args.bind_host
     advertise_host = args.advertise_host or bind_host
 
@@ -286,9 +281,11 @@ async def _run(args: argparse.Namespace) -> int:
 
     log.info("worker starting", extra={
         "session_id": args.session_id,
+        "session_name": args.session_name,
         "simulation_id": args.simulation_id,
         "endpoint": adapter.endpoint,
         "bind_host": bind_host,
+        "http_host": args.http_host,
         "http_port": http_port,
         "pid": os.getpid(),
     })
@@ -307,13 +304,14 @@ async def _run(args: argparse.Namespace) -> int:
 
     dashboard.start()
 
-    # Ready fires from inside adapter.run() once the port is bound.
     async def on_ready() -> None:
         await _publish_ready(
             r,
             session_id=args.session_id,
+            session_name=args.session_name,
             simulation_id=args.simulation_id,
             port=args.opcua_port,
+            http_port=http_port,
         )
 
     failed = False
@@ -328,6 +326,7 @@ async def _run(args: argparse.Namespace) -> int:
                 _heartbeat_loop(
                     r,
                     session_id=args.session_id,
+                    session_name=args.session_name,
                     simulation_id=args.simulation_id,
                     port=args.opcua_port,
                     adapter=adapter,
@@ -336,13 +335,10 @@ async def _run(args: argparse.Namespace) -> int:
                 name=f"heartbeat-{args.session_id}",
             )
     except* Exception as eg:
-        # TaskGroup wraps errors. Log each and remember that something
-        # went wrong; we return non-zero below so the daemon marks the
-        # session as failed rather than cleanly stopped.
-        #
-        # Note: `return` is not allowed inside an `except*` block. Setting
-        # a flag and returning after the try/except*/finally is the
-        # standard workaround.
+        # TaskGroup wraps errors. Log each and return non-zero below so
+        # the daemon marks the session failed rather than cleanly
+        # stopped. `return` is not allowed inside `except*`, hence the
+        # flag.
         for exc in eg.exceptions:
             log.error("worker task failed", extra={"error": repr(exc)})
         failed = True

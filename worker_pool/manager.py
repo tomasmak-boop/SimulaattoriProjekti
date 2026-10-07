@@ -3,26 +3,24 @@
 Spawns, tracks, stops, and reconciles worker processes. This is the
 process-lifecycle layer: it does not know about Redis streams, does not
 publish events, and does not enforce idle timeouts. Those are the
-daemon's job. The manager gives the daemon four primitives:
+daemon's job.
 
-    start_worker(session_id, simulation_id, config_params)
-    stop_worker(session_id, reason)
-    reap_dead_workers()
-    reconcile_on_startup()
-
-plus an `active_sessions()` snapshot for diagnostics.
+session_id is the UUID and keys the internal dict, port leases, and
+PID files. session_name is the slug or UUID and is passed through to
+the worker so the gateway can name the OPC UA folder. Both flow
+unchanged through this module.
 
 Design notes:
 
 - Workers are spawned with start_new_session=True so they detach from
   the daemon's process group. If the daemon dies, workers keep running,
   and a restart can adopt them via Redis heartbeats.
-- Graceful stop is SIGTERM, then a wait of WORKER_STOP_GRACE seconds,
-  then SIGKILL. Port leases are released only after the process is gone.
+- Graceful stop is SIGTERM, then WORKER_STOP_GRACE seconds, then
+  SIGKILL. Port leases are released only after the process is gone.
 - Reconciliation on startup uses Redis heartbeats as the source of
   truth. A worker is alive if its heartbeat key exists AND its PID
   responds to signal 0.
-- All mutations of the worker dict take an asyncio.Lock. Concurrent
+- All mutations of the worker dict take an asyncio.Lock so concurrent
   start_worker calls do not race on port allocation.
 """
 
@@ -71,7 +69,8 @@ class WorkerStartupError(WorkerManagerError):
 class SpawnedWorker:
     """Bookkeeping for one running worker."""
 
-    session_id: str
+    session_id: str          # UUID — identity
+    session_name: str        # slug or UUID — display name
     simulation_id: str
     port: int
     pid: int
@@ -140,6 +139,7 @@ class WorkerPoolManager:
         self,
         *,
         session_id: str,
+        session_name: str,
         simulation_id: str,
         config_params: dict[str, Any] | None = None,
     ) -> SpawnedWorker:
@@ -159,6 +159,7 @@ class WorkerPoolManager:
         try:
             proc = await self._spawn_process(
                 session_id=session_id,
+                session_name=session_name,
                 simulation_id=simulation_id,
                 port=port,
                 config_params=config_params or {},
@@ -169,6 +170,7 @@ class WorkerPoolManager:
 
         record = SpawnedWorker(
             session_id=session_id,
+            session_name=session_name,
             simulation_id=simulation_id,
             port=port,
             pid=proc.pid,
@@ -196,6 +198,7 @@ class WorkerPoolManager:
 
         log.info("worker spawned", extra={
             "session_id": session_id,
+            "session_name": session_name,
             "simulation_id": simulation_id,
             "port": port,
             "pid": proc.pid,
@@ -206,6 +209,7 @@ class WorkerPoolManager:
         self,
         *,
         session_id: str,
+        session_name: str,
         simulation_id: str,
         port: int,
         config_params: dict[str, Any],
@@ -218,6 +222,7 @@ class WorkerPoolManager:
         cmd = [
             self._python, "-m", self._worker_module,
             "--session-id", session_id,
+            "--session-name", session_name,
             "--simulation-id", simulation_id,
             "--opcua-port", str(port),
             "--advertise-host", self._advertise_host,
@@ -260,6 +265,7 @@ class WorkerPoolManager:
 
         log.info("worker stopped", extra={
             "session_id": session_id,
+            "session_name": record.session_name,
             "reason": reason,
             "pid": record.pid,
         })
@@ -282,7 +288,9 @@ class WorkerPoolManager:
         if _pid_alive(record.pid):
             log.warning(
                 "worker did not exit on SIGTERM; sending SIGKILL",
-                extra={"session_id": record.session_id, "pid": record.pid},
+                extra={"session_id": record.session_id,
+                       "session_name": record.session_name,
+                       "pid": record.pid},
             )
             try:
                 os.kill(record.pid, signal.SIGKILL)
@@ -315,6 +323,7 @@ class WorkerPoolManager:
                 continue
             log.info("reaping dead worker", extra={
                 "session_id": record.session_id,
+                "session_name": record.session_name,
                 "pid": record.pid,
                 "port": record.port,
             })
@@ -332,6 +341,8 @@ class WorkerPoolManager:
 
         Uses Redis heartbeats as the source of truth. A worker is alive
         if its heartbeat key exists and its PID responds to signal 0.
+        The heartbeat payload carries session_name so an adopted worker
+        keeps its original display name.
         """
         keys = await self._redis.keys(f"{REDIS_HEARTBEAT_PREFIX}*")
         adopted: list[str] = []
@@ -359,6 +370,7 @@ class WorkerPoolManager:
 
             record = SpawnedWorker(
                 session_id=session_id,
+                session_name=str(hb.get("session_name") or session_id),
                 simulation_id=str(hb.get("simulation_id", "")),
                 port=port,
                 pid=pid,
@@ -386,6 +398,7 @@ class WorkerPoolManager:
         return [
             {
                 "session_id": r.session_id,
+                "session_name": r.session_name,
                 "simulation_id": r.simulation_id,
                 "port": r.port,
                 "pid": r.pid,
@@ -445,6 +458,7 @@ class WorkerPoolManager:
                 if text:
                     log.info("worker", extra={
                         "session_id": record.session_id,
+                        "session_name": record.session_name,
                         "line": text,
                     })
         except asyncio.CancelledError:

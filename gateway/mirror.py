@@ -1,9 +1,10 @@
 """Mirror one worker's OPC UA address space inside the gateway.
 
-Reads the worker's schema once at connect time to build a mirrored subtree
-under the session folder. Subscribes to the worker's measurement and status
-nodes so gateway values stay current. Command nodes get a setter that
-forwards writes back to the worker through the gateway's write queue.
+Reads the worker's schema once at connect time to build a mirrored
+subtree under the session folder. Subscribes to the worker's
+measurement and status nodes so gateway values stay current. Command
+nodes get a setter that forwards writes back to the worker through the
+gateway's write queue.
 
 The worker's root object exposes three self-describing properties that
 this mirror reads on connect:
@@ -14,6 +15,10 @@ this mirror reads on connect:
 
 Reading these instead of keeping a hardcoded map means adding a new
 plugin to the project requires no changes to the gateway.
+
+session_id is the UUID (used for logging and for the gateway's write
+queue, which is keyed by UUID). session_name is the slug or UUID and
+appears in the OPC UA folder path so CODESYS sees a stable name.
 """
 
 from __future__ import annotations
@@ -74,6 +79,7 @@ class WorkerMirror:
         self,
         *,
         session_id: str,
+        session_name: str,
         simulation_id: str,
         worker_endpoint: str,
         parent_folder: Node,
@@ -81,7 +87,8 @@ class WorkerMirror:
         server: Server,
         enqueue_write: Callable[[str, str, Any], None],
     ) -> None:
-        self.session_id = session_id
+        self.session_id = session_id          # UUID
+        self.session_name = session_name      # slug or UUID
         self.simulation_id = simulation_id
         self.worker_endpoint = worker_endpoint
         self._parent_folder = parent_folder
@@ -107,7 +114,9 @@ class WorkerMirror:
         self._client = Client(url=self.worker_endpoint)
         await self._client.connect()
         log.info("connected to worker", extra={
-            "session_id": self.session_id, "endpoint": self.worker_endpoint,
+            "session_id": self.session_id,
+            "session_name": self.session_name,
+            "endpoint": self.worker_endpoint,
         })
 
         # Discover the simulation root by looking for a node with a
@@ -127,13 +136,14 @@ class WorkerMirror:
 
         log.info("discovered simulation root", extra={
             "session_id": self.session_id,
+            "session_name": self.session_name,
             "namespace": self._worker_ns_uri,
         })
 
         ns = self._namespace_idx
         self._session_folder = await self._parent_folder.add_folder(
-            ua.NodeId(f"Gateway.Sessions.{self.session_id}", ns),
-            ua.QualifiedName(self.session_id, ns),
+            ua.NodeId(f"Gateway.Sessions.{self.session_name}", ns),
+            ua.QualifiedName(self.session_name, ns),
         )
 
         for folder_name in ("Commands", "Measurements", "Status"):
@@ -142,7 +152,8 @@ class WorkerMirror:
             except Exception:
                 log.exception("failed to mirror folder",
                               extra={"folder": folder_name,
-                                     "session_id": self.session_id})
+                                     "session_id": self.session_id,
+                                     "session_name": self.session_name})
 
         await self._start_subscription()
 
@@ -209,7 +220,7 @@ class WorkerMirror:
         ns = self._namespace_idx
         gateway_folder = await self._session_folder.add_folder(
             ua.NodeId(
-                f"Gateway.Sessions.{self.session_id}.{folder_name}", ns
+                f"Gateway.Sessions.{self.session_name}.{folder_name}", ns
             ),
             ua.QualifiedName(folder_name, ns),
         )
@@ -228,7 +239,9 @@ class WorkerMirror:
             variant_type = await worker_node.read_data_type_as_variant_type()
         except Exception:
             log.warning("could not read data type; assuming Double",
-                        extra={"session_id": self.session_id, "name": name})
+                        extra={"session_id": self.session_id,
+                               "session_name": self.session_name,
+                               "name": name})
             variant_type = ua.VariantType.Double
 
         try:
@@ -240,7 +253,7 @@ class WorkerMirror:
         ns = self._namespace_idx
         gateway_node = await gateway_folder.add_variable(
             ua.NodeId(
-                f"Gateway.Sessions.{self.session_id}"
+                f"Gateway.Sessions.{self.session_name}"
                 f".{folder_name}.{name}", ns
             ),
             ua.QualifiedName(name, ns),
@@ -258,6 +271,8 @@ class WorkerMirror:
             )
 
     def _make_command_setter(self, name: str):
+        # Writes are enqueued with session_id (UUID), which is what the
+        # gateway's mirror dict is keyed on.
         session_id = self.session_id
         enqueue = self._enqueue_write
 
