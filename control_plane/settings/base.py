@@ -125,10 +125,14 @@ DATABASES = {
 
 _redis_url = _env("REDIS_URL", "redis://localhost:6379/0")
 
+# channels_redis waits for messages with a 5 s blocking pop, and redis-py
+# 8 defaults socket_timeout to 5 s as well. Left at the default, an idle
+# WebSocket dies with a TimeoutError after about five seconds, so the
+# socket timeout must be longer than the blocking pop.
 CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
-        "CONFIG": {"hosts": [_redis_url]},
+        "CONFIG": {"hosts": [{"address": _redis_url, "socket_timeout": 15}]},
     },
 }
 
