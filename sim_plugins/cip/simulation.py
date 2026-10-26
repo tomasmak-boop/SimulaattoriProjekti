@@ -1,4 +1,4 @@
-"""Clean-In-Place (CIP) process simulation conforming to BaseSimulation.
+"""CIP process simulation conforming to BaseSimulation.
 
 Maintains a byte-for-byte schema identical to the CODESYS DataSource mapping
 to eliminate the need for manual editor variable updates.
@@ -18,17 +18,29 @@ from sim_runtime.base import (
     StatusSpec,
 )
 
+# Duration a fault condition must persist before being latched.
+# Absorbs single-tick subscription transients while catching genuine faults.
+FAULT_HOLD_S = 0.5
+
+# Fault bit positions matching the CODESYS HMI decode.
+_FAULT_BIT_NO_LIQUID     = 0  # 1
+_FAULT_BIT_NO_VALVE      = 1  # 2
+_FAULT_BIT_MULTI_SOURCE  = 2  # 4
+_FAULT_BIT_OVERTEMP      = 3  # 8
+_FAULT_BIT_DRAIN_BLOCKED = 4  # 16
+_FAULT_BIT_COUNT         = 5
+
 
 class CIPSimulation(BaseSimulation):
     """Simulates a Clean-In-Place industrial washing process.
 
-    Physics and safety interlocks match IEC 60204-1 §9.2.3.4 (reset permits
-    restart, never causes it; active live faults cannot be silently acknowledged).
+    Handles fault latching, debouncing, and interlocks compliant with
+    IEC 60204-1 §9.2.3.4.
     """
-    
+
     SIMULATION_ID = "cip"
     SIMULATION_NAME = "Clean-In-Place"
-    SIMULATION_VERSION = "2.0.0"
+    SIMULATION_VERSION = "2.1.0"
 
     # --- schema ---------------------------------------------------------
 
@@ -64,7 +76,8 @@ class CIPSimulation(BaseSimulation):
                 description="Run the caustic tank heater.",
             ),
             "ResetFaultCmd": CommandSpec(
-                name="ResetFaultCmd", type="bool",
+                name="ResetFaultCmd",
+                type="bool",
                 description=(
                     "Pulse to acknowledge and clear latched faults whose "
                     "underlying condition has cleared."
@@ -72,9 +85,12 @@ class CIPSimulation(BaseSimulation):
                 pulse=True,
             ),
             "CausticTempSetpointC": CommandSpec(
-                name="CausticTempSetpointC", type="float",
+                name="CausticTempSetpointC",
+                type="float",
                 description="Caustic tank temperature setpoint.",
-                min=20.0, max=80.0, default=45.0,
+                min=20.0,
+                max=80.0,
+                default=45.0,
             ),
         }
 
@@ -110,29 +126,29 @@ class CIPSimulation(BaseSimulation):
     @classmethod
     def status(cls) -> dict[str, StatusSpec]:
         specs = {
-            "LiquidCode": StatusSpec("LiquidCode", "uint16",
-                "0=Empty, 1=Water, 2=Caustic, 3=Acid, 4=Mixture."),
-            "LiquidName": StatusSpec("LiquidName", "string",
-                "Human-readable liquid name."),
-            "RouteCode": StatusSpec("RouteCode", "uint16",
-                "0=Closed, 1=Return, 2=Drain, 3=Return+Drain."),
-            "RouteName": StatusSpec("RouteName", "string",
-                "Human-readable route name."),
-            "FaultWord": StatusSpec("FaultWord", "uint16",
-                "Latched faults. Cleared by ResetFaultCmd once the "
-                "underlying condition has cleared."),
-            "StatusWord": StatusSpec("StatusWord", "uint16",
-                "Process status bits."),
-            "SequenceHint": StatusSpec("SequenceHint", "string",
-                "Best-guess name of the current sequence."),
+            "LiquidCode": StatusSpec(
+                "LiquidCode", "uint16",
+                "0=Empty, 1=Water, 2=Caustic, 3=Acid, 4=Mixture.",
+            ),
+            "LiquidName": StatusSpec("LiquidName", "string", "Human-readable liquid name."),
+            "RouteCode": StatusSpec(
+                "RouteCode", "uint16",
+                "0=Closed, 1=Return, 2=Drain, 3=Return+Drain.",
+            ),
+            "RouteName": StatusSpec("RouteName", "string", "Human-readable route name."),
+            "FaultWord": StatusSpec(
+                "FaultWord", "uint16",
+                "Latched faults. Cleared by ResetFaultCmd once the underlying condition clears.",
+            ),
+            "StatusWord": StatusSpec("StatusWord", "uint16", "Process status bits."),
+            "SequenceHint": StatusSpec("SequenceHint", "string", "Best-guess name of the current sequence."),
         }
         for branch in (
             "waterInlet", "causticInlet", "acidInlet",
             "pumpRunning", "returnFlow", "drainFlow",
             "gravityDrain", "drainBlocked", "chemicalRecovery",
         ):
-            specs[branch] = StatusSpec(branch, "bool",
-                f"UI hint: {branch} is active.")
+            specs[branch] = StatusSpec(branch, "bool", f"UI hint: {branch} is active.")
         return specs
 
     # --- lifecycle ------------------------------------------------------
@@ -140,7 +156,7 @@ class CIPSimulation(BaseSimulation):
     def __init__(self, config: SimulationConfig) -> None:
         self._lock = threading.Lock()
 
-        # Commands
+        # Command states
         self._pump = False
         self._water_valve = False
         self._caustic_valve = False
@@ -161,9 +177,14 @@ class CIPSimulation(BaseSimulation):
         self._flow_lpm = 0.0
         self._conductivity = 0.0
         self._liquid_code = 0
-        self._fault_word = 0           # visible, latched
-        self._fault_latch = 0          # internal latch, mirrors _fault_word
+
+        # Fault tracking state
+        self._fault_word = 0
+        self._fault_latch = 0
         self._fault_ack_pending = False
+        self._detect_hold = [0.0] * _FAULT_BIT_COUNT
+
+        # Status indicators
         self._status_word = 0
         self._route_code = 0
         self._sequence_hint = "Idle"
@@ -205,6 +226,16 @@ class CIPSimulation(BaseSimulation):
                     "SequenceHint": self._sequence_hint,
                     **{k: bool(v) for k, v in self._branches.items()},
                 },
+                "commands": {
+                    "PumpCmd": self._pump,
+                    "WaterValveCmd": self._water_valve,
+                    "CausticValveCmd": self._caustic_valve,
+                    "AcidValveCmd": self._acid_valve,
+                    "ReturnValveCmd": self._return_valve,
+                    "DrainValveCmd": self._drain_valve,
+                    "HeaterCmd": self._heater,
+                    "CausticTempSetpointC": self._setpoint_c,
+                },
             }
 
     # --- command dispatch -----------------------------------------------
@@ -240,8 +271,6 @@ class CIPSimulation(BaseSimulation):
         now = time.monotonic()
         dt = min(max(now - self._last_tick, 0.0), 1.0)
 
-        # A reset that arrives in the same millisecond as a step must still
-        # be honoured, so we don't return early when there is a pending ack.
         if dt <= 0.0 and not self._fault_ack_pending:
             return
         if dt > 0.0:
@@ -268,32 +297,40 @@ class CIPSimulation(BaseSimulation):
         )
         chemical_in_tank = conductivity_preview >= 25.0
 
-        detected = 0
+        # Step 1: Detect raw current fault conditions based on user commands.
+        detected_raw = 0
         if pump_cmd and total_before < 1.0 and source_count == 0:
-            detected |= 1 << 0
+            detected_raw |= 1 << _FAULT_BIT_NO_LIQUID
         if pump_cmd and not return_cmd and not drain_cmd:
-            detected |= 1 << 1
+            detected_raw |= 1 << _FAULT_BIT_NO_VALVE
         if source_count > 1:
-            detected |= 1 << 2
+            detected_raw |= 1 << _FAULT_BIT_MULTI_SOURCE
         if self._temperature_c > 85.0:
-            detected |= 1 << 3
+            detected_raw |= 1 << _FAULT_BIT_OVERTEMP
         if drain_cmd and chemical_in_tank:
-            detected |= 1 << 4
+            detected_raw |= 1 << _FAULT_BIT_DRAIN_BLOCKED
 
-        # Consume an ack before re-detecting. Acknowledged bits stay only if
-        # their condition is still present in `detected`. A fault whose cause
-        # has cleared disappears; a live fault survives the ack.
+        # Step 2: Advance hold timers to debounce transient conditions.
+        detected = 0
+        for i in range(_FAULT_BIT_COUNT):
+            bit = 1 << i
+            if detected_raw & bit:
+                self._detect_hold[i] += dt
+                if self._detect_hold[i] >= FAULT_HOLD_S:
+                    detected |= bit
+            else:
+                self._detect_hold[i] = 0.0
+
+        # Step 3: Handle fault acknowledgments against raw live states.
         if self._fault_ack_pending:
-            self._fault_latch &= detected
+            self._fault_latch &= detected_raw
             self._fault_ack_pending = False
 
-        # New faults always latch.
+        # Step 4: Latch new faults and publish.
         self._fault_latch |= detected
         self._fault_word = self._fault_latch
 
-        # Physics is frozen while a fault is latched. This prevents the
-        # "level rises while program is COMPLETE" failure mode: even a
-        # stuck command cannot add volume once a fault has been raised.
+        # Step 5: Execute simulation physics (frozen if any fault is active).
         blocked = self._fault_word != 0
         pump_running = pump_cmd and not blocked
         inlet_boost = 1.5 if pump_running else 1.0
@@ -437,7 +474,7 @@ class CIPSimulation(BaseSimulation):
             "chemicalRecovery": bool(is_chemical_recovery),
         }
 
-    # --- helpers (unchanged) --------------------------------------------
+    # --- helpers --------------------------------------------------------
 
     def _fractions_locked(self) -> dict[str, float]:
         total = self._total_volume()

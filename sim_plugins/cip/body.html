@@ -1,89 +1,319 @@
 <style>
-  /* Wide card for the diagram + metrics + trends row */
+  /* ================================================================ */
+  /* CIP plugin styles                                                 */
+  /* Palette rules: greys for normal state, saturated color ONLY for   */
+  /* abnormal conditions (per ISA-101). Fluid colors are muted so they */
+  /* never compete with alarm red / amber.                             */
+  /* ================================================================ */
+
   .cip-wide { grid-column: 1 / -1; }
 
+  /* ---- Mode / process-state banner (ISA-101 §8) ------------------ */
+  .mode-banner {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 14px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .mode-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .6px;
+    text-transform: uppercase;
+  }
+  .mode-badge.idle     { background: #eef1f5; color: var(--ink-faint); }
+  .mode-badge.running  { background: #e3f2fd; color: #1565c0; }
+  .mode-badge.complete { background: #e3f5eb; color: var(--ok); }
+  .mode-badge.fault    { background: #fde8e8; color: var(--bad); }
+  .mode-badge.heating  { background: #fff4e0; color: var(--warn); }
+  .mode-banner .seq    { color: var(--ink-soft); font-weight: 500; }
+  .mode-banner .seq b  { color: var(--ink); font-weight: 600; }
+  .mode-banner .when   {
+    margin-left: auto;
+    color: var(--ink-faint);
+    font-size: 12px;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ---- Alarm banner (ISA-18.2 §6.3) ----------------------------- */
+  .alarm-banner {
+    grid-column: 1 / -1;
+    display: none;
+    align-items: center;
+    gap: 12px;
+    padding: 9px 14px;
+    border-radius: var(--radius);
+    font-size: 13px;
+    font-weight: 600;
+    border-left: 4px solid;
+  }
+  .alarm-banner.active   { display: flex; }
+  .alarm-banner.critical { background: #fde8e8; border-color: var(--bad);  color: #9c1a1a; }
+  .alarm-banner.high     { background: #fff4e0; border-color: var(--warn); color: #9a5a06; }
+  .alarm-banner.medium   { background: #fffae6; border-color: #e6a319;     color: #7a6006; }
+  .alarm-banner .count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 26px;
+    height: 26px;
+    padding: 0 9px;
+    border-radius: 999px;
+    background: currentColor;
+    color: #ffffff;
+    font-variant-numeric: tabular-nums;
+    font-size: 12px;
+    font-weight: 700;
+  }
+  .alarm-banner .label {
+    font-size: 10px;
+    letter-spacing: .8px;
+    opacity: .8;
+    text-transform: uppercase;
+  }
+  .alarm-banner .msg {
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* ---- Numeric values: tabular figures (ISO 9241-303) ----------- */
+  .num {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
+    display: inline-block;
+  }
+
+  /* ---- Process diagram ------------------------------------------ */
   .diagram-wrap svg { width: 100%; height: auto; display: block; }
 
-  /* Pipes */
+  /* Muted fluid palette — visible enough to distinguish, never as
+     loud as alarm red / amber. */
   .pipe { fill: none; stroke: #b7c0cc; stroke-width: 8;
           stroke-linecap: round; stroke-linejoin: round; }
-  .pipe.flow { stroke-dasharray: 11 13; animation: cip-dash 0.7s linear infinite; }
-  .pipe.flow.water   { stroke: #1e88e5; }
-  .pipe.flow.caustic { stroke: #fb8c00; }
-  .pipe.flow.acid    { stroke: #d81b8c; }
-  .pipe.flow.mixture { stroke: #7e57c2; }
+  .pipe.flow           { stroke-dasharray: 10 14;
+                         animation: cip-dash 1.1s linear infinite; }
+  .pipe.flow.water     { stroke: #6491b4; }
+  .pipe.flow.caustic   { stroke: #b49158; }
+  .pipe.flow.acid      { stroke: #b46488; }
+  .pipe.flow.mixture   { stroke: #8c7d9b; }
   @keyframes cip-dash { to { stroke-dashoffset: -24; } }
 
-  .arrow { fill: #64748b; }
-  .equip { fill: #cbd5e1; stroke: #64748b; stroke-width: 2; }
-  .equip-label { fill: #1f2933; font-size: 15px; font-weight: 600; }
-  .equip-sub { fill: #52606d; font-size: 12.5px; }
-  .valve-label { fill: #52606d; font-size: 13px; }
-  .tick-label { fill: #7b8794; font-size: 12px; }
+  /* Respect reduced-motion preference (WCAG 2.3.3). */
+  @media (prefers-reduced-motion: reduce) {
+    .pipe.flow { animation: none; stroke-dasharray: none; }
+  }
 
+  .arrow   { fill: #64748b; }
+  .equip   { fill: #eef1f5; stroke: #7b8794; stroke-width: 2; }
+  .equip-label { fill: var(--ink); font-size: 15px; font-weight: 600; }
+  .equip-sub   { fill: var(--ink-soft); font-size: 12.5px; }
+  .valve-label { fill: var(--ink-soft); font-size: 12.5px; }
+  .tick-label  { fill: var(--ink-faint); font-size: 11.5px; }
+  .tag {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 10.5px;
+    fill: var(--ink-faint);
+    letter-spacing: .4px;
+  }
+
+  /* Valve states — neutral, commanded, flowing. Commanded uses
+     amber (IEC 60073 = "caution"), flowing uses muted fluid color. */
   .valve { fill: #ffffff; stroke: #64748b; stroke-width: 2; }
-  .valve.cmd { fill: #d97706; stroke: #a8620a; }
-  .valve.flow { fill: #2e9e6b; stroke: #1c6a47; }
+  .valve.cmd  { fill: #f0c878; stroke: #a8761a; }
+  .valve.flow { fill: #4a7c59; stroke: #2e5236; }
 
-  .pump-run { fill: #2e9e6b; stroke: #1c6a47; stroke-width: 2; }
-  .tank-bg { fill: #ffffff; }
+  .pump-run   { fill: #4a7c59; stroke: #2e5236; stroke-width: 2; }
+  .tank-bg    { fill: #ffffff; }
   .tank-outline { fill: none; stroke: #64748b; stroke-width: 2.5; }
-  .chip-bg { fill: #ffffff; opacity: .82; }
-  .chip-text { fill: #1f2933; font-size: 14px; font-weight: 600; }
+  .chip-bg    { fill: #ffffff; opacity: .82; }
+  .chip-text  { fill: var(--ink); font-size: 14px; font-weight: 600; }
 
-  .heater-off { fill: #cbd5e1; stroke: #64748b; stroke-width: 2; }
-  .heater-on  { fill: #ffd8a8; stroke: #d97706; stroke-width: 2.5; }
+  .heater-off { fill: #eef1f5; stroke: #7b8794; stroke-width: 2; }
+  .heater-on  { fill: #f0c878; stroke: #a8761a; stroke-width: 2.5; }
 
-  /* Metric tiles */
-  .cip-metrics { display: grid; grid-template-columns: repeat(4, 1fr);
-                 gap: 10px; margin-top: 12px; }
+  /* ---- Metric tiles --------------------------------------------- */
+  .cip-metrics {
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    gap: 10px; margin-top: 12px;
+  }
   @media (max-width: 720px) { .cip-metrics { grid-template-columns: repeat(2, 1fr); } }
-  .cip-tile { background: #f7f9fb; border: 1px solid #d3dae2;
-              border-radius: 8px; padding: 9px 11px; }
-  .cip-tile .k { font-size: 11px; color: #7b8794;
-                 text-transform: uppercase; letter-spacing: .4px; }
-  .cip-tile .v { font-size: 22px; font-weight: 650;
-                 font-variant-numeric: tabular-nums; margin-top: 2px; }
-  .cip-tile .u { font-size: 12px; color: #7b8794; font-weight: 500; }
+  .cip-tile {
+    background: var(--panel-2); border: 1px solid var(--line);
+    border-radius: 8px; padding: 9px 11px;
+    border-top: 3px solid var(--line-strong, #b0bcc8);
+  }
+  .cip-tile .k {
+    font-size: 11px; color: var(--ink-faint);
+    text-transform: uppercase; letter-spacing: .4px;
+  }
+  .cip-tile .v {
+    font-size: 22px; font-weight: 650;
+    font-variant-numeric: tabular-nums;
+    margin-top: 2px;
+  }
+  .cip-tile .u { font-size: 12px; color: var(--ink-faint); font-weight: 500; }
 
-  /* Trends */
-  .cip-trends { display: grid; grid-template-columns: 1fr 1fr;
-                gap: 10px; margin-top: 10px; }
+  /* Threshold colors (ISA-101 §10.3) — only the border changes,
+     the number stays dark for readability. */
+  .cip-tile.warn { border-top-color: var(--warn); }
+  .cip-tile.crit { border-top-color: var(--bad); }
+  .cip-tile.warn .k, .cip-tile.crit .k { color: var(--ink-soft); }
+
+  /* ---- Trends --------------------------------------------------- */
+  .cip-trends {
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 10px; margin-top: 10px;
+  }
   @media (max-width: 620px) { .cip-trends { grid-template-columns: 1fr; } }
-  .cip-trend { background: #f7f9fb; border: 1px solid #d3dae2;
-               border-radius: 8px; padding: 8px 10px; }
-  .cip-trend .t-head { display: flex; justify-content: space-between;
-                       font-size: 11px; color: #7b8794; }
-  .cip-trend .t-axis { display: flex; justify-content: space-between;
-                       font-size: 10.5px; color: #7b8794; margin-top: 2px; }
-  .cip-trend canvas { width: 100%; height: 46px; display: block; margin-top: 2px; }
+  .cip-trend {
+    background: var(--panel-2); border: 1px solid var(--line);
+    border-radius: 8px; padding: 8px 10px;
+  }
+  .cip-trend .t-head {
+    display: flex; justify-content: space-between;
+    align-items: baseline;
+    font-size: 11px; color: var(--ink-faint);
+  }
+  .cip-trend .t-cur {
+    font-size: 13px; font-weight: 600; color: var(--ink);
+    font-variant-numeric: tabular-nums;
+  }
+  .cip-trend .t-axis {
+    display: flex; justify-content: space-between;
+    font-size: 10.5px; color: var(--ink-faint);
+    margin-top: 3px;
+    font-variant-numeric: tabular-nums;
+  }
+  .cip-trend canvas { width: 100%; height: 54px; display: block; margin-top: 2px; }
 
-  /* Pills + badges */
-  .pill-row { display: flex; flex-wrap: wrap; gap: 6px; }
-  .badge { font-size: 11px; font-weight: 600; padding: 2px 7px;
-           border-radius: 999px; border: 1px solid #d3dae2;
-           background: #f7f9fb; color: #52606d; }
-  .badge.cmd { background: #fff3e0; border-color: #f2ce9a; color: #9a5a06; }
+  /* ---- State / heating panels ---------------------------------- */
+  .kv {
+    display: flex; justify-content: space-between; gap: 10px;
+    padding: 5px 0; border-bottom: 1px dashed var(--line);
+  }
+  .kv:last-child { border-bottom: 0; }
+  .kv .k { color: var(--ink-soft); }
+  .kv .v {
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+  }
+  .heat-line { display: flex; justify-content: space-between; padding: 4px 0; }
+  .heat-line .k { color: var(--ink-soft); }
+  .heat-line .v {
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
 
-  /* Fault list */
-  .alarm-none { color: #2e9e6b; font-weight: 600; }
-  .alarm-item { display: flex; align-items: baseline; gap: 8px;
-                padding: 5px 0; border-bottom: 1px dashed #d3dae2; }
-  .alarm-item:last-child { border-bottom: 0; }
-  .alarm-item .bit { font-size: 11px; font-weight: 700; color: #fff;
-                     background: #e02424; border-radius: 5px;
-                     padding: 1px 6px; flex: none;
-                     font-variant-numeric: tabular-nums; }
-  .alarm-item .txt { color: #7a1414; }
+  /* ---- Equipment status grid ------------------------------------ */
+  .equip-grid {
+    display: grid; grid-template-columns: repeat(2, 1fr);
+    gap: 4px 16px;
+  }
+  .equip-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 5px 0;
+    font-size: 13px;
+    border-bottom: 1px dashed var(--line);
+  }
+  .equip-row:last-child { border-bottom: 0; }
+  .equip-row .tag-name {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 11px; color: var(--ink-faint);
+    margin-left: auto;
+    letter-spacing: .3px;
+  }
+  .equip-row .dot {
+    width: 9px; height: 9px; border-radius: 50%;
+    background: #cbd5e1; flex: none;
+    transition: background .2s;
+  }
+  .equip-row .dot.on  { background: var(--ok); }
+  .equip-row .dot.off { background: #cbd5e1; }
 
-  /* Heat panel */
-  .heat-line { display: flex; justify-content: space-between; padding: 3px 0; }
+  /* ---- Alarms list (ISA-18.2 §6.4) ----------------------------- */
+  .alarm-list { display: flex; flex-direction: column; gap: 6px; }
+  .alarm-item-ii {
+    display: grid;
+    grid-template-columns: 62px 1fr 68px;
+    gap: 10px;
+    align-items: center;
+    padding: 8px 12px;
+    border-radius: 6px;
+    background: var(--panel-2);
+    border-left: 3px solid var(--line);
+    font-size: 12.5px;
+  }
+  .alarm-item-ii.critical { border-left-color: var(--bad); }
+  .alarm-item-ii.high     { border-left-color: var(--warn); }
+  .alarm-item-ii.medium   { border-left-color: #e6a319; }
+  .alarm-item-ii .prio {
+    font-size: 10px; font-weight: 700;
+    letter-spacing: .8px; text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+  .alarm-item-ii.critical .prio { color: var(--bad); }
+  .alarm-item-ii.high .prio     { color: var(--warn); }
+  .alarm-item-ii .time {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 11px; color: var(--ink-faint);
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+  .alarm-none {
+    padding: 14px; text-align: center;
+    color: var(--ink-faint); font-size: 12.5px;
+  }
 </style>
 
+<!-- =========== Mode banner (ISA-101 §8) =========== -->
+<div class="mode-banner" id="mode-banner">
+  <span class="mode-badge idle" id="mode-badge">Idle</span>
+  <span class="seq">Sequence: <b id="mode-seq">Idle</b></span>
+  <span class="when" id="mode-when">—</span>
+</div>
+
+<!-- =========== Alarm banner (ISA-18.2 §6.3) ======= -->
+<div class="alarm-banner" id="alarm-banner">
+  <span class="count" id="alarm-count">0</span>
+  <span class="label">Active</span>
+  <span class="msg" id="alarm-msg">—</span>
+</div>
+
+<!-- =========== Process diagram ==================== -->
 <section class="card cip-wide">
-  <h2>Process</h2>
+  <h2>Process — Clean-In-Place</h2>
   <div class="diagram-wrap">
-    <svg viewBox="0 62 960 456" role="img" aria-label="CIP process diagram">
+    <svg viewBox="0 62 960 456" role="img"
+         aria-label="CIP process diagram">
+
+      <!-- Tags (monospace, grey) placed near each element so the
+           HMI matches the P&amp;ID. -->
+      <text class="tag" x="480" y="447" text-anchor="middle">TK-101</text>
+      <text class="tag" x="330" y="513" text-anchor="middle">P-101</text>
+      <text class="tag" x="620" y="93" text-anchor="middle">V-101</text>
+      <text class="tag" x="620" y="175" text-anchor="middle">V-102</text>
+      <text class="tag" x="700" y="253" text-anchor="middle">V-103</text>
+      <text class="tag" x="230" y="400" text-anchor="middle">V-104</text>
+      <text class="tag" x="185" y="478" text-anchor="middle">V-105</text>
+      <text class="tag" x="865" y="395" text-anchor="middle">TK-201</text>
+      <text class="tag" x="791" y="435" text-anchor="middle">H-101</text>
+
+      <!-- Pipes -->
       <path id="p-water"   class="pipe" d="M780 96 H450 V180"></path>
       <path id="p-acid"    class="pipe" d="M780 152 H505 V180"></path>
       <path id="p-caustic" class="pipe" d="M865 315 V232 H560"></path>
@@ -125,9 +355,9 @@
       <text class="equip-label" x="855" y="158" text-anchor="middle">Acid supply</text>
 
       <rect x="758" y="288" width="192" height="158" rx="12"
-            fill="#fff8f0" stroke="#f2ddc0"></rect>
+            fill="#f7f9fb" stroke="#d3dae2"></rect>
       <text class="equip-sub" x="854" y="308" text-anchor="middle"
-            style="font-weight:600;fill:#9a5a06">Caustic tank + heater</text>
+            style="font-weight:600">Caustic tank + heater</text>
       <rect class="tank-bg" x="822" y="318" width="86" height="104" rx="6"></rect>
       <rect class="tank-outline" x="822" y="318" width="86" height="104" rx="6"></rect>
       <text class="equip-label" x="865" y="360" text-anchor="middle"
@@ -168,40 +398,55 @@
   </div>
 
   <div class="cip-metrics">
-    <div class="cip-tile">
+    <div class="cip-tile" id="tile-level">
       <div class="k">Level</div>
-      <div class="v"><span id="m-level">0.0</span><span class="u"> %</span></div>
+      <div class="v"><span id="m-level" class="num">0.0</span><span class="u"> %</span></div>
     </div>
     <div class="cip-tile">
       <div class="k">Flow (pump)</div>
-      <div class="v"><span id="m-flow">0.0</span><span class="u"> L/min</span></div>
+      <div class="v"><span id="m-flow" class="num">0.0</span><span class="u"> L/min</span></div>
     </div>
-    <div class="cip-tile">
+    <div class="cip-tile" id="tile-temp">
       <div class="k">Process temp.</div>
-      <div class="v"><span id="m-temp">20.0</span><span class="u"> °C</span></div>
+      <div class="v"><span id="m-temp" class="num">20.0</span><span class="u"> °C</span></div>
     </div>
-    <div class="cip-tile">
+    <div class="cip-tile" id="tile-cond">
       <div class="k">Conductivity</div>
-      <div class="v"><span id="m-cond">0.0</span><span class="u"> su</span></div>
+      <div class="v"><span id="m-cond" class="num">0.0</span><span class="u"> µS/cm</span></div>
     </div>
   </div>
 
   <div class="cip-trends">
     <div class="cip-trend">
-      <div class="t-head"><span>Level</span><span id="tr-level-v">0.0 %</span></div>
-      <canvas id="tr-level" width="300" height="46"></canvas>
-      <div class="t-axis"><span>0–100 %</span><span>← ~90 s</span></div>
+      <div class="t-head">
+        <span>Level</span>
+        <span class="t-cur"><span id="tr-level-v">0.0</span> %</span>
+      </div>
+      <canvas id="tr-level" width="300" height="54"></canvas>
+      <div class="t-axis">
+        <span>0 – 100 %</span>
+        <span id="tr-level-minmax">—</span>
+        <span>← 90 s</span>
+      </div>
     </div>
     <div class="cip-trend">
-      <div class="t-head"><span>Process temp.</span><span id="tr-temp-v">20.0 °C</span></div>
-      <canvas id="tr-temp" width="300" height="46"></canvas>
-      <div class="t-axis"><span>10–90 °C</span><span>← ~90 s</span></div>
+      <div class="t-head">
+        <span>Process temp.</span>
+        <span class="t-cur"><span id="tr-temp-v">20.0</span> °C</span>
+      </div>
+      <canvas id="tr-temp" width="300" height="54"></canvas>
+      <div class="t-axis">
+        <span>10 – 90 °C</span>
+        <span id="tr-temp-minmax">—</span>
+        <span>← 90 s</span>
+      </div>
     </div>
   </div>
 </section>
 
+<!-- =========== State / heating panels ============ -->
 <section class="card">
-  <h2>Actual state</h2>
+  <h2>Process state</h2>
   <div class="kv"><span class="k">Pump</span><span class="v" id="s-pump">--</span></div>
   <div class="kv"><span class="k">Action</span><span class="v" id="s-action">Idle</span></div>
   <div class="kv"><span class="k">Liquid</span><span class="v" id="s-liquid">Empty</span></div>
@@ -213,15 +458,26 @@
   <h2>Caustic tank &amp; heating</h2>
   <div class="heat-line"><span class="k">Heater command</span><span class="v" id="h-cmd">Off</span></div>
   <div class="heat-line"><span class="k">Caustic tank temp.</span><span class="v" id="h-temp">20.0 °C</span></div>
-  <div class="heat-line"><span class="k">Temp. setpoint</span><span class="v" id="h-sp">45.0 °C</span></div>
+  <div class="heat-line"><span class="k">Temp. setpoint</span><span class="v" id="h-sp">—</span></div>
 </section>
 
+<!-- =========== Equipment status =================== -->
 <section class="card">
-  <h2>Commands</h2>
-  <div class="pill-row" id="command-pills"></div>
+  <h2>Equipment status</h2>
+  <div class="equip-grid">
+    <div class="equip-row"><span class="dot" id="dot-pump"></span>Pump<span class="tag-name">P-101</span></div>
+    <div class="equip-row"><span class="dot" id="dot-water"></span>Water valve<span class="tag-name">V-101</span></div>
+    <div class="equip-row"><span class="dot" id="dot-acid"></span>Acid valve<span class="tag-name">V-102</span></div>
+    <div class="equip-row"><span class="dot" id="dot-caustic"></span>Caustic valve<span class="tag-name">V-103</span></div>
+    <div class="equip-row"><span class="dot" id="dot-return"></span>Return valve<span class="tag-name">V-104</span></div>
+    <div class="equip-row"><span class="dot" id="dot-drain"></span>Drain valve<span class="tag-name">V-105</span></div>
+    <div class="equip-row"><span class="dot" id="dot-heat"></span>Heater<span class="tag-name">H-101</span></div>
+    <div class="equip-row"><span class="dot" id="dot-flow"></span>Flow detected<span class="tag-name">FI-101</span></div>
+  </div>
 </section>
 
+<!-- =========== Alarms (ISA-18.2) ================= -->
 <section class="card">
-  <h2>Alarms / faults</h2>
-  <div id="faults"></div>
+  <h2>Active alarms</h2>
+  <div id="faults" class="alarm-list"></div>
 </section>
