@@ -65,6 +65,12 @@ def configure_logging(level: str = "INFO") -> None:
     logging.getLogger("asyncua").setLevel(logging.WARNING)
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 
+class _ContextAdapter(logging.LoggerAdapter):
+    def process(self, msg, kwargs):
+        merged = dict(self.extra)
+        merged.update(kwargs.get("extra") or {})
+        kwargs["extra"] = merged
+        return msg, kwargs
 
 def get_logger(name: str, **context: Any) -> logging.LoggerAdapter:
     """Return a logger that stamps the given context on every record.
