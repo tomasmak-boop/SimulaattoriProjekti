@@ -21,6 +21,16 @@ client and connects over loopback. So bind_host defaults to 127.0.0.1
 and advertise_host defaults to the same. Set advertise_host to a
 different value only if a client must reach the worker directly.
 
+The worker's OPC UA endpoint (adapter.endpoint, e.g.
+opc.tcp://127.0.0.1:5000/cip/) is internal and only used by the
+gateway's WorkerMirror. The HTTP dashboard displays a different
+address: the aggregation gateway's public endpoint
+(opc.tcp://<GATEWAY_PUBLIC_HOST>/gateway/), because that is the address
+an operator should point CODESYS at. GATEWAY_PUBLIC_HOST is set by
+scripts/stack.sh, inherited by the daemon, and passed to this process
+through the environment. If it is unset (dev run, unit test), the
+dashboard falls back to the worker's own endpoint and logs a warning.
+
 The HTTP dashboard binds to 127.0.0.1 as well: it is proxied through
 Django, so it is not exposed on the network. SessionReadyEvent carries
 the dashboard's port so the control plane can reach it over loopback.
@@ -265,12 +275,28 @@ async def _run(args: argparse.Namespace) -> int:
         bind_host=bind_host,
         port=args.opcua_port,
     )
+
+    # Client-facing endpoint displayed by the dashboard. This is the
+    # aggregation gateway's public address, not the worker's loopback.
+    # GATEWAY_PUBLIC_HOST is set by scripts/stack.sh, inherited by the
+    # daemon, and reaches this process through the environment.
+    gateway_host = os.environ.get("GATEWAY_PUBLIC_HOST", "").strip()
+    if gateway_host:
+        client_endpoint = f"opc.tcp://{gateway_host}/gateway/"
+    else:
+        client_endpoint = adapter.endpoint
+        log.warning(
+            "GATEWAY_PUBLIC_HOST not set; dashboard will display the "
+            "worker's internal endpoint instead of the gateway endpoint",
+            extra={"fallback_endpoint": adapter.endpoint},
+        )
+
     dashboard = HTTPDashboard(
         sim,
         host=args.http_host,
         port=http_port,
         session_id=args.session_id,
-        endpoint=adapter.endpoint,
+        endpoint=client_endpoint,
     )
 
     redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
@@ -284,6 +310,7 @@ async def _run(args: argparse.Namespace) -> int:
         "session_name": args.session_name,
         "simulation_id": args.simulation_id,
         "endpoint": adapter.endpoint,
+        "client_endpoint": client_endpoint,
         "bind_host": bind_host,
         "http_host": args.http_host,
         "http_port": http_port,
