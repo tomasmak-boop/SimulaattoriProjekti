@@ -49,7 +49,17 @@
   // --- Small helpers -----------------------------------------------
   function el(id) { return document.getElementById(id); }
   function txt(id, s) { var e = el(id); if (e) e.textContent = s; }
-  function setClass(id, cls) { var e = el(id); if (e) e.className = cls; }
+
+  // setAttribute('class', ...) works on both HTML and SVG elements.
+  // The className property only works on HTML — it is a read-only
+  // SVGAnimatedString on SVG elements, so an assignment is silently
+  // a no-op. Every class-writing helper uses setAttribute so that the
+  // same functions work whether the target element is a <span> in a
+  // status grid or a <circle> / <rect> inside the process diagram.
+  function setClass(id, cls) {
+    var e = el(id);
+    if (e) e.setAttribute('class', cls);
+  }
 
   function setPipe(id, active, fluid) {
     var e = el(id);
@@ -63,6 +73,11 @@
     if (flowing)      cls += ' flow';
     else if (commanded) cls += ' cmd';
     e.setAttribute('class', cls);
+  }
+  function setDot(id, on) {
+    var e = el(id);
+    if (!e) return;
+    e.setAttribute('class', 'dot ' + (on ? 'on' : 'off'));
   }
 
   function fmt(value, digits) {
@@ -283,13 +298,6 @@
     else                      tile.className = base;
   }
 
-  // --- Equipment status dots ---------------------------------------
-  function setDot(id, on) {
-    var e = el(id);
-    if (!e) return;
-    e.className = 'dot ' + (on ? 'on' : 'off');
-  }
-
   // ================================================================
   // Main render
   // ================================================================
@@ -359,7 +367,7 @@
     setValve('v-return',  false, branches.returnFlow);
     setValve('v-drain',   false, branches.drainFlow || branches.gravityDrain);
 
-    // --- Pump & heater ---
+    // --- Pump & heater (SVG — relies on setAttribute in setClass) ---
     setClass('pump',
       branches.pumpRunning ? 'pump-run' : 'equip');
 
