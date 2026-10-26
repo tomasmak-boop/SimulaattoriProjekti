@@ -97,7 +97,15 @@ def session_detail(request, token: str):
 
 
 def _endpoint_url() -> str:
-    host = getattr(settings, "GATEWAY_PUBLIC_HOST", "")
+    """Return the client-facing aggregation gateway URL.
+
+    ``GATEWAY_PUBLIC_HOST`` carries ``host:port`` (e.g.
+    ``10.120.36.62:8080``). The scheme and the ``/gateway/`` path are
+    invariant, so they are appended here rather than stored in the
+    setting. Returns an empty string if the setting is unset or
+    whitespace-only.
+    """
+    host = getattr(settings, "GATEWAY_PUBLIC_HOST", "").strip()
     return f"opc.tcp://{host}/gateway/" if host else ""
 
 
@@ -110,8 +118,8 @@ async def session_proxy(request, name: str, path: str = ""):
     """Serve a worker's dashboard at /s/<name>/ through Django.
 
     The worker's HTTP server binds to 127.0.0.1 only, so the browser
-    cannot reach it directly; Django fetches on its behalf. Only port
-    8000 needs to be open in the firewall.
+    cannot reach it directly; Django fetches on its behalf. Only one port
+    needs to be open in the firewall.
 
     This is an async view on purpose. Under ASGI, Django runs sync
     views on one shared thread, and every open dashboard polls four
