@@ -135,14 +135,14 @@ cmd_up() {
         env REDIS_URL="$REDIS_URL" \
             OPCUA_PORT_START="$OPCUA_PORT_START" \
             OPCUA_PORT_END="$OPCUA_PORT_END" \
+            GATEWAY_PUBLIC_HOST="$GATEWAY_PUBLIC_HOST" \
             python -m worker_pool.daemon --advertise-host 127.0.0.1
 
     start_service django \
         env REDIS_URL="$REDIS_URL" \
             GATEWAY_PUBLIC_HOST="$GATEWAY_PUBLIC_HOST" \
             PYTHONUNBUFFERED=1 \
-            uvicorn control_plane.asgi:application \
-                --host 0.0.0.0 --port "$DJANGO_PORT"
+            python manage.py runserver "0.0.0.0:$DJANGO_PORT"
 
     start_service event-consumer \
         env REDIS_URL="$REDIS_URL" \
@@ -155,7 +155,7 @@ cmd_up() {
     log "waiting for services to become ready..."
 
     wait_for_log worker-pool       '"msg":"daemon ready"'                || { err "worker-pool not ready";    cmd_status; return 1; }
-    wait_for_log django            'Application startup complete'         || { err "django not ready";         cmd_status; return 1; }
+    wait_for_log django            'Watching for file changes'           || { err "django not ready";         cmd_status; return 1; }
     wait_for_log event-consumer    'event consumer started'              || { err "event-consumer not ready"; cmd_status; return 1; }
     wait_for_log gateway           '"msg":"gateway listening"'           || { err "gateway not ready";        cmd_status; return 1; }
 
