@@ -65,17 +65,34 @@ def configure_logging(level: str = "INFO") -> None:
     logging.getLogger("asyncua").setLevel(logging.WARNING)
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 
+
 class _ContextAdapter(logging.LoggerAdapter):
+    """LoggerAdapter that merges per-call ``extra=`` with the static context.
+
+    The base ``logging.LoggerAdapter.process`` overwrites the caller's
+    ``extra=`` with the adapter's fixed ``self.extra`` dictionary. That
+    silently drops fields like ``session_id``, ``port``, and ``line``
+    from every ``log.info("...", extra={...})`` call site.
+
+    This override merges the two so both arrive in the emitted record.
+    Caller-supplied keys win when the same key exists in both, so an
+    individual log call can override a default context value.
+    """
+
     def process(self, msg, kwargs):
-        merged = dict(self.extra)
+        merged: dict[str, Any] = dict(self.extra)
         merged.update(kwargs.get("extra") or {})
         kwargs["extra"] = merged
         return msg, kwargs
+
 
 def get_logger(name: str, **context: Any) -> logging.LoggerAdapter:
     """Return a logger that stamps the given context on every record.
 
         log = get_logger(__name__, session_id=sid)
         log.info("worker started")   # -> {"session_id": sid, ...}
+
+    Also preserves any ``extra=`` passed at the call site, merging it
+    with ``context`` (call site wins on key collisions).
     """
-    return logging.LoggerAdapter(logging.getLogger(name), context)
+    return _ContextAdapter(logging.getLogger(name), context)
