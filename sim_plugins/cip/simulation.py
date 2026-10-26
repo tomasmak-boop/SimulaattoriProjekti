@@ -1,20 +1,7 @@
-"""CIP process simulation.
+"""Clean-In-Place (CIP) process simulation conforming to BaseSimulation.
 
-Refactored from the original standalone simulator to conform to
-BaseSimulation. The physics in _tick_locked is unchanged. What changed:
-
-- Commands and measurements are declared as named schema entries instead
-  of Modbus-shaped holding/input registers.
-- Snapshot returns {"measurements": {...}, "status": {...}} as the plugin
-  contract requires.
-- Read-only UI hints (branch flows, pipe states) are exposed as status
-  booleans. The dashboard never guesses physics.
-- ResetFaultCmd is a pulse command. The adapter handles clear-on-next-tick;
-  the plugin applies the reset immediately when write_command is called.
-
-The internal lock protects all mutable state. step() and snapshot() may be
-called from different threads (asyncio loop and HTTP thread respectively),
-so every public method takes the lock.
+Maintains a byte-for-byte schema identical to the CODESYS DataSource mapping
+to eliminate the need for manual editor variable updates.
 """
 
 from __future__ import annotations
@@ -33,11 +20,17 @@ from sim_runtime.base import (
 
 
 class CIPSimulation(BaseSimulation):
+    """Simulates a Clean-In-Place industrial washing process.
+
+    Physics and safety interlocks match IEC 60204-1 §9.2.3.4 (reset permits
+    restart, never causes it; active live faults cannot be silently acknowledged).
+    """
+    
     SIMULATION_ID = "cip"
     SIMULATION_NAME = "Clean-In-Place"
     SIMULATION_VERSION = "2.0.0"
 
-    # --- schema ---
+    # --- schema ---------------------------------------------------------
 
     @classmethod
     def commands(cls) -> dict[str, CommandSpec]:
@@ -72,7 +65,10 @@ class CIPSimulation(BaseSimulation):
             ),
             "ResetFaultCmd": CommandSpec(
                 name="ResetFaultCmd", type="bool",
-                description="Pulse to clear the active fault word.",
+                description=(
+                    "Pulse to acknowledge and clear latched faults whose "
+                    "underlying condition has cleared."
+                ),
                 pulse=True,
             ),
             "CausticTempSetpointC": CommandSpec(
@@ -123,15 +119,13 @@ class CIPSimulation(BaseSimulation):
             "RouteName": StatusSpec("RouteName", "string",
                 "Human-readable route name."),
             "FaultWord": StatusSpec("FaultWord", "uint16",
-                "Active faults as a bitfield."),
+                "Latched faults. Cleared by ResetFaultCmd once the "
+                "underlying condition has cleared."),
             "StatusWord": StatusSpec("StatusWord", "uint16",
                 "Process status bits."),
             "SequenceHint": StatusSpec("SequenceHint", "string",
                 "Best-guess name of the current sequence."),
         }
-        # Branch flow flags consumed by the dashboard to animate pipes.
-        # Exposing these keeps the physics on the server; the UI never
-        # recomputes what it thinks should be flowing.
         for branch in (
             "waterInlet", "causticInlet", "acidInlet",
             "pumpRunning", "returnFlow", "drainFlow",
@@ -141,12 +135,12 @@ class CIPSimulation(BaseSimulation):
                 f"UI hint: {branch} is active.")
         return specs
 
-    # --- lifecycle ---
+    # --- lifecycle ------------------------------------------------------
 
     def __init__(self, config: SimulationConfig) -> None:
         self._lock = threading.Lock()
 
-        # Commands (kept as plain attributes; the lock is the sync point)
+        # Commands
         self._pump = False
         self._water_valve = False
         self._caustic_valve = False
@@ -167,12 +161,13 @@ class CIPSimulation(BaseSimulation):
         self._flow_lpm = 0.0
         self._conductivity = 0.0
         self._liquid_code = 0
-        self._fault_word = 0
+        self._fault_word = 0           # visible, latched
+        self._fault_latch = 0          # internal latch, mirrors _fault_word
+        self._fault_ack_pending = False
         self._status_word = 0
         self._route_code = 0
         self._sequence_hint = "Idle"
 
-        # Optional initial state from config
         params = config.params or {}
         self._water_l = float(params.get("initial_water_l", 0.0))
         self._caustic_l = float(params.get("initial_caustic_l", 0.0))
@@ -180,10 +175,9 @@ class CIPSimulation(BaseSimulation):
         self._temperature_c = float(params.get("initial_temperature_c", 20.0))
 
         self._last_tick = time.monotonic()
-        self._start_time = self._last_tick
         self._branches: dict[str, bool] = {}
 
-    # --- step and snapshot ---
+    # --- step and snapshot ----------------------------------------------
 
     def step(self, dt: float) -> None:
         with self._lock:
@@ -192,7 +186,6 @@ class CIPSimulation(BaseSimulation):
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             total = self._total_volume()
-            fractions = self._fractions_locked()
             return {
                 "measurements": {
                     "LevelPercent": round(total, 1),
@@ -214,7 +207,7 @@ class CIPSimulation(BaseSimulation):
                 },
             }
 
-    # --- command dispatch ---
+    # --- command dispatch -----------------------------------------------
 
     def write_command(self, name: str, value: Any) -> None:
         with self._lock:
@@ -236,21 +229,23 @@ class CIPSimulation(BaseSimulation):
                 self._setpoint_c = float(value)
             elif name == "ResetFaultCmd":
                 if value:
-                    self._fault_word = 0
+                    self._fault_ack_pending = True
             else:
                 raise ValueError(f"Unknown command: {name}")
-            # Advance so the effect is visible in the next snapshot even
-            # if step() hasn't fired yet.
             self._tick_locked()
 
-    # --- physics (unchanged from original, just renamed internals) ---
+    # --- physics --------------------------------------------------------
 
     def _tick_locked(self) -> None:
         now = time.monotonic()
         dt = min(max(now - self._last_tick, 0.0), 1.0)
-        if dt <= 0.0:
+
+        # A reset that arrives in the same millisecond as a step must still
+        # be honoured, so we don't return early when there is a pending ack.
+        if dt <= 0.0 and not self._fault_ack_pending:
             return
-        self._last_tick = now
+        if dt > 0.0:
+            self._last_tick = now
 
         caustic_temp_setpoint_c = max(20.0, min(self._setpoint_c, 80.0))
         pump_cmd = self._pump
@@ -273,19 +268,32 @@ class CIPSimulation(BaseSimulation):
         )
         chemical_in_tank = conductivity_preview >= 25.0
 
-        fault_word = 0
+        detected = 0
         if pump_cmd and total_before < 1.0 and source_count == 0:
-            fault_word |= 1 << 0
+            detected |= 1 << 0
         if pump_cmd and not return_cmd and not drain_cmd:
-            fault_word |= 1 << 1
+            detected |= 1 << 1
         if source_count > 1:
-            fault_word |= 1 << 2
+            detected |= 1 << 2
         if self._temperature_c > 85.0:
-            fault_word |= 1 << 3
+            detected |= 1 << 3
         if drain_cmd and chemical_in_tank:
-            fault_word |= 1 << 4
-        self._fault_word = fault_word
+            detected |= 1 << 4
 
+        # Consume an ack before re-detecting. Acknowledged bits stay only if
+        # their condition is still present in `detected`. A fault whose cause
+        # has cleared disappears; a live fault survives the ack.
+        if self._fault_ack_pending:
+            self._fault_latch &= detected
+            self._fault_ack_pending = False
+
+        # New faults always latch.
+        self._fault_latch |= detected
+        self._fault_word = self._fault_latch
+
+        # Physics is frozen while a fault is latched. This prevents the
+        # "level rises while program is COMPLETE" failure mode: even a
+        # stuck command cannot add volume once a fault has been raised.
         blocked = self._fault_word != 0
         pump_running = pump_cmd and not blocked
         inlet_boost = 1.5 if pump_running else 1.0
@@ -414,7 +422,9 @@ class CIPSimulation(BaseSimulation):
             "causticInlet": bool(caustic_cmd and source_count == 1 and not blocked),
             "acidInlet": bool(acid_cmd and source_count == 1 and not blocked),
             "pumpRunning": bool(pump_running),
-            "returnFlow": bool(return_cmd and pump_running and self._flow_lpm > 0.1),
+            "returnFlow": bool(
+                return_cmd and pump_running and self._flow_lpm > 0.1
+            ),
             "drainFlow": bool(
                 drain_cmd and pump_running and self._flow_lpm > 0.1
                 and not drain_blocked_by_chemicals
@@ -427,7 +437,7 @@ class CIPSimulation(BaseSimulation):
             "chemicalRecovery": bool(is_chemical_recovery),
         }
 
-    # --- helpers (unchanged) ---
+    # --- helpers (unchanged) --------------------------------------------
 
     def _fractions_locked(self) -> dict[str, float]:
         total = self._total_volume()
