@@ -4,10 +4,12 @@
 
 {% block content %}
 <h1>Active sessions</h1>
+{% if endpoint_url %}
 <p class="subtitle">
   Each session is reachable through the gateway at
-  <code>{% if endpoint_url %}{{ endpoint_url }}{% else %}opc.tcp://&lt;server&gt;:8080/gateway/{% endif %}</code>.
+  <code>{{ endpoint_url }}</code>.
 </p>
+{% endif %}
 
 <div class="toolbar">
   <div class="muted">
