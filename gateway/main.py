@@ -14,6 +14,15 @@ workers that were already running before the gateway started.
 
 from __future__ import annotations
 
+import sys
+
+if sys.version_info < (3, 11):
+    sys.stderr.write(
+        f"Python 3.11+ required. Found Python "
+        f"{sys.version_info.major}.{sys.version_info.minor}. Exiting.\n"
+    )
+    sys.exit(1)
+
 import argparse
 import asyncio
 import os
