@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import math
 import os
 import signal
 import sys
@@ -23,11 +24,37 @@ import sys
 import redis.asyncio as aioredis
 
 from gateway.server import Gateway
-from shared.constants import GATEWAY_OPCUA_PORT
+from shared.constants import (
+    GATEWAY_OPCUA_PORT,
+    GATEWAY_RECONNECT_ATTEMPTS,
+    GATEWAY_RECONNECT_BASE_DELAY,
+    GATEWAY_RECONNECT_MAX_DELAY,
+    GATEWAY_SAMPLING_INTERVAL_MS,
+)
 from shared.logging import configure_logging, get_logger
 
 
 log = get_logger(__name__)
+
+
+def _positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be an integer") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return parsed
+
+
+def _positive_float(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a number") from exc
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a finite number greater than 0")
+    return parsed
 
 
 async def _run(args: argparse.Namespace) -> int:
@@ -38,6 +65,10 @@ async def _run(args: argparse.Namespace) -> int:
         advertise_host=args.advertise_host,
         port=args.port,
         redis=r,
+        reconnect_attempts=args.reconnect_attempts,
+        reconnect_base_delay=args.reconnect_base_delay,
+        reconnect_max_delay=args.reconnect_max_delay,
+        sampling_interval_ms=args.sampling_interval_ms,
     )
 
     stop = asyncio.Event()
@@ -76,6 +107,22 @@ def main() -> int:
     p.add_argument("--advertise-host", required=True,
                    help="Host/IP the gateway advertises (e.g. 10.120.32.67)")
     p.add_argument("--port", type=int, default=GATEWAY_OPCUA_PORT)
+    p.add_argument(
+        "--reconnect-attempts", type=_positive_int,
+        default=GATEWAY_RECONNECT_ATTEMPTS,
+    )
+    p.add_argument(
+        "--reconnect-base-delay", type=_positive_float,
+        default=GATEWAY_RECONNECT_BASE_DELAY,
+    )
+    p.add_argument(
+        "--reconnect-max-delay", type=_positive_float,
+        default=GATEWAY_RECONNECT_MAX_DELAY,
+    )
+    p.add_argument(
+        "--sampling-interval-ms", type=_positive_int,
+        default=GATEWAY_SAMPLING_INTERVAL_MS,
+    )
     args = p.parse_args()
     try:
         return asyncio.run(_run(args))

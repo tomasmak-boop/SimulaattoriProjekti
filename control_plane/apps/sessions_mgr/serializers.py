@@ -73,6 +73,8 @@ class SessionDetailSerializer(serializers.ModelSerializer):
             "advertised_endpoint",
             "endpoint_url",
             "config_params",
+            "opcua_username",
+            "opcua_password",
             "created_at",
             "started_at",
             "stopped_at",

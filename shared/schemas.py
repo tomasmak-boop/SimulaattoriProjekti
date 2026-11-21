@@ -16,7 +16,14 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Annotated, Any, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    field_validator,
+    model_validator,
+)
 
 
 def _now() -> datetime:
@@ -42,6 +49,14 @@ class StartSessionCommand(_CommandBase):
     session_name: str
     simulation_id: str
     config_params: dict[str, Any] = Field(default_factory=dict)
+    opcua_username: str | None = None
+    opcua_password: str | None = None
+
+    @model_validator(mode="after")
+    def _credentials_are_paired(self) -> StartSessionCommand:
+        if (self.opcua_username is None) != (self.opcua_password is None):
+            raise ValueError("OPC UA username and password must be provided together")
+        return self
 
     @field_validator("session_id", "session_name", "simulation_id")
     @classmethod
@@ -97,8 +112,16 @@ class SessionReadyEvent(_EventBase):
     session_name: str
     simulation_id: str
     port: int
-    http_port: int
+    http_port: int | None = None
     pid: int
+    opcua_username: str | None = None
+    opcua_password: str | None = None
+
+    @model_validator(mode="after")
+    def _credentials_are_paired(self) -> SessionReadyEvent:
+        if (self.opcua_username is None) != (self.opcua_password is None):
+            raise ValueError("OPC UA username and password must be provided together")
+        return self
 
 
 class SessionStoppedEvent(_EventBase):

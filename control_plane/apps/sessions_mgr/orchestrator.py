@@ -12,13 +12,14 @@ is a long-running process, uses the async client instead.
 
 from __future__ import annotations
 
+import secrets
 import uuid
 from datetime import datetime, timezone
 
 import redis
 from django.conf import settings
 
-from shared.constants import REDIS_CMD_STREAM, STREAM_MAXLEN
+from shared.constants import OPCUA_AUTH_MODE, REDIS_CMD_STREAM, STREAM_MAXLEN
 from shared.logging import get_logger
 from shared.schemas import (
     PingCommand,
@@ -67,11 +68,24 @@ def request_start(session) -> str:
     """
     session_id = str(session.id)
     session_name = session.external_id()
+    if OPCUA_AUTH_MODE == "per_session" and (
+        not session.opcua_username or not session.opcua_password
+    ):
+        session.opcua_username = f"session_{secrets.token_urlsafe(12)}"
+        session.opcua_password = secrets.token_urlsafe(32)
+        session.save(update_fields=["opcua_username", "opcua_password"])
+
     command = StartSessionCommand(
         session_id=session_id,
         session_name=session_name,
         simulation_id=session.simulation_id,
         config_params=session.config_params or {},
+        opcua_username=(
+            session.opcua_username if OPCUA_AUTH_MODE == "per_session" else None
+        ),
+        opcua_password=(
+            session.opcua_password if OPCUA_AUTH_MODE == "per_session" else None
+        ),
         request_id=str(uuid.uuid4()),
         issued_at=datetime.now(timezone.utc),
     )

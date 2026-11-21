@@ -49,6 +49,7 @@ from shared.constants import (
     HEARTBEAT_INTERVAL,
     HEARTBEAT_TTL,
     HTTP_PORT_OFFSET,
+    OPCUA_AUTH_MODE,
     PID_DIR,
     REDIS_EVT_STREAM,
     REDIS_HEARTBEAT_PREFIX,
@@ -135,7 +136,10 @@ async def _heartbeat_loop(
     session_name: str,
     simulation_id: str,
     port: int,
+    http_port: int,
     adapter: OPCUAAdapter,
+    opcua_username: str | None,
+    opcua_password: str | None,
     stop: asyncio.Event,
 ) -> None:
     hb_key = f"{REDIS_HEARTBEAT_PREFIX}{session_id}"
@@ -155,8 +159,11 @@ async def _heartbeat_loop(
         payload = json.dumps({
             "pid": os.getpid(),
             "port": port,
+            "http_port": http_port,
             "simulation_id": simulation_id,
             "session_name": session_name,
+            "opcua_username": opcua_username,
+            "opcua_password": opcua_password,
             "uptime": round(time.monotonic() - start_mono, 1),
             "requests": count,
         })
@@ -190,6 +197,8 @@ async def _publish_ready(
     simulation_id: str,
     port: int,
     http_port: int,
+    opcua_username: str | None,
+    opcua_password: str | None,
 ) -> None:
     try:
         ready = SessionReadyEvent(
@@ -199,6 +208,8 @@ async def _publish_ready(
             port=port,
             http_port=http_port,
             pid=os.getpid(),
+            opcua_username=opcua_username,
+            opcua_password=opcua_password,
         )
         await r.xadd(
             REDIS_EVT_STREAM,
@@ -258,12 +269,23 @@ async def _run(args: argparse.Namespace) -> int:
 
     bind_host = args.bind_host
     advertise_host = args.advertise_host or bind_host
+    opcua_username = os.environ.get("OPCUA_SESSION_USERNAME")
+    opcua_password = os.environ.get("OPCUA_SESSION_PASSWORD")
+    if OPCUA_AUTH_MODE == "none":
+        opcua_username = None
+        opcua_password = None
+    elif not opcua_username or not opcua_password:
+        raise SystemExit(
+            "OPCUA_AUTH_MODE=per_session requires worker OPC UA credentials"
+        )
 
     adapter = OPCUAAdapter(
         sim,
         advertise_host=advertise_host,
         bind_host=bind_host,
         port=args.opcua_port,
+        opcua_username=opcua_username,
+        opcua_password=opcua_password,
     )
     dashboard = HTTPDashboard(
         sim,
@@ -271,6 +293,7 @@ async def _run(args: argparse.Namespace) -> int:
         port=http_port,
         session_id=args.session_id,
         endpoint=adapter.endpoint,
+        on_activity=adapter.record_external_activity,
     )
 
     redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
@@ -312,6 +335,8 @@ async def _run(args: argparse.Namespace) -> int:
             simulation_id=args.simulation_id,
             port=args.opcua_port,
             http_port=http_port,
+            opcua_username=opcua_username,
+            opcua_password=opcua_password,
         )
 
     failed = False
@@ -329,7 +354,10 @@ async def _run(args: argparse.Namespace) -> int:
                     session_name=args.session_name,
                     simulation_id=args.simulation_id,
                     port=args.opcua_port,
+                    http_port=http_port,
                     adapter=adapter,
+                    opcua_username=opcua_username,
+                    opcua_password=opcua_password,
                     stop=stop,
                 ),
                 name=f"heartbeat-{args.session_id}",

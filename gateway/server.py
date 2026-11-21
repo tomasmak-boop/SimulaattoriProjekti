@@ -26,6 +26,10 @@ from asyncua import Server, ua
 
 from gateway.mirror import SimulationRootNotFound, WorkerMirror
 from shared.constants import (
+    GATEWAY_RECONNECT_ATTEMPTS,
+    GATEWAY_RECONNECT_BASE_DELAY,
+    GATEWAY_RECONNECT_MAX_DELAY,
+    GATEWAY_SAMPLING_INTERVAL_MS,
     GATEWAY_EVT_CONSUMER_GROUP,
     REDIS_EVT_STREAM,
     REDIS_HEARTBEAT_PREFIX,
@@ -49,10 +53,24 @@ class Gateway:
         advertise_host: str,
         port: int,
         redis: aioredis.Redis,
+        reconnect_attempts: int = GATEWAY_RECONNECT_ATTEMPTS,
+        reconnect_base_delay: float = GATEWAY_RECONNECT_BASE_DELAY,
+        reconnect_max_delay: float = GATEWAY_RECONNECT_MAX_DELAY,
+        sampling_interval_ms: int = GATEWAY_SAMPLING_INTERVAL_MS,
     ) -> None:
         self._advertise_host = advertise_host
         self._port = port
         self._redis = redis
+        if reconnect_attempts < 1:
+            raise ValueError("reconnect_attempts must be at least 1")
+        if reconnect_base_delay <= 0 or reconnect_max_delay <= 0:
+            raise ValueError("reconnect delays must be greater than zero")
+        if sampling_interval_ms < 1:
+            raise ValueError("sampling_interval_ms must be at least 1")
+        self._reconnect_attempts = reconnect_attempts
+        self._reconnect_base_delay = reconnect_base_delay
+        self._reconnect_max_delay = reconnect_max_delay
+        self._sampling_interval_ms = sampling_interval_ms
 
         self._server = Server()
         self._namespace_idx: int = 0
@@ -164,13 +182,25 @@ class Gateway:
                 )
                 continue
 
-            ev = SessionReadyEvent(
-                session_id=session_id,
-                session_name=session_name,
-                simulation_id=str(sim_id),
-                port=int(port),
-                pid=int(pid),
-            )
+            try:
+                ev = SessionReadyEvent(
+                    session_id=session_id,
+                    session_name=session_name,
+                    simulation_id=str(sim_id),
+                    port=int(port),
+                    http_port=(
+                        int(hb["http_port"]) if hb.get("http_port") is not None
+                        else None
+                    ),
+                    pid=int(pid),
+                    opcua_username=hb.get("opcua_username"),
+                    opcua_password=hb.get("opcua_password"),
+                )
+            except (TypeError, ValueError):
+                log.warning("reconcile: invalid heartbeat fields",
+                            extra={"session_id": session_id},
+                            exc_info=True)
+                continue
             await self._add_mirror(ev)
             seen.append(session_id)
 
@@ -260,7 +290,7 @@ class Gateway:
         # A fresh WorkerMirror per attempt: a failed connect can leave
         # a half-open asyncua client, and reusing it tends to fail on
         # the second try with a confusing error.
-        max_attempts = 5
+        max_attempts = self._reconnect_attempts
         mirror: WorkerMirror | None = None
 
         for attempt in range(1, max_attempts + 1):
@@ -273,12 +303,16 @@ class Gateway:
                 namespace_idx=self._namespace_idx,
                 server=self._server,
                 enqueue_write=self._enqueue_write,
+                opcua_username=ev.opcua_username,
+                opcua_password=ev.opcua_password,
+                sampling_interval_ms=self._sampling_interval_ms,
             )
             try:
                 await candidate.connect_and_mirror()
                 mirror = candidate
                 break
             except SimulationRootNotFound as exc:
+                await candidate.disconnect()
                 # Not transient. The worker is up but its address space
                 # does not have a discoverable root.
                 log.error(
@@ -289,6 +323,7 @@ class Gateway:
                 )
                 return
             except Exception as exc:
+                await candidate.disconnect()
                 if attempt >= max_attempts:
                     log.exception(
                         "failed to mirror worker after retries",
@@ -297,7 +332,10 @@ class Gateway:
                                "attempts": max_attempts},
                     )
                     return
-                delay = min(0.3 * attempt, 1.5)
+                delay = min(
+                    self._reconnect_base_delay * attempt,
+                    self._reconnect_max_delay,
+                )
                 log.info(
                     "mirror connect failed; retrying",
                     extra={"session_id": ev.session_id,

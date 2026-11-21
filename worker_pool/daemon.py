@@ -113,15 +113,13 @@ async def _idle_loop(
     bridge: RedisBridge,
     stop: asyncio.Event,
 ) -> None:
-    """Stop workers whose OPC UA clients have been silent too long.
+    """Stop workers with no OPC UA or dashboard activity for too long.
 
     The worker writes cip:idle:<sid> with the wall-clock timestamp of
-    the last external OPC UA activity. If no client has connected for
-    WORKER_IDLE_TIMEOUT seconds, the daemon stops the session.
+    the last external OPC UA or dashboard activity. If neither has
+    connected for WORKER_IDLE_TIMEOUT seconds, the daemon stops it.
     """
-    # Check once per minute; the timeout itself is on the order of
-    # half an hour, so precision is not important.
-    interval = 60.0
+    interval = max(0.1, min(60.0, WORKER_IDLE_TIMEOUT / 4))
 
     while not stop.is_set():
         try:
@@ -150,7 +148,7 @@ async def _idle_loop(
                 continue
 
             idle_secs = now - last_activity
-            if idle_secs > WORKER_IDLE_TIMEOUT:
+            if idle_secs >= WORKER_IDLE_TIMEOUT:
                 log.info(
                     "stopping idle session",
                     extra={"session_id": session_id,

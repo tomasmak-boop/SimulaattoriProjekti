@@ -86,6 +86,9 @@ class WorkerMirror:
         namespace_idx: int,
         server: Server,
         enqueue_write: Callable[[str, str, Any], None],
+        opcua_username: str | None = None,
+        opcua_password: str | None = None,
+        sampling_interval_ms: int = 500,
     ) -> None:
         self.session_id = session_id          # UUID
         self.session_name = session_name      # slug or UUID
@@ -95,6 +98,9 @@ class WorkerMirror:
         self._namespace_idx = namespace_idx
         self._server = server
         self._enqueue_write = enqueue_write
+        self._opcua_username = opcua_username
+        self._opcua_password = opcua_password
+        self._sampling_interval_ms = sampling_interval_ms
 
         self._client: Client | None = None
         self._session_folder: Node | None = None
@@ -112,6 +118,11 @@ class WorkerMirror:
 
     async def connect_and_mirror(self) -> None:
         self._client = Client(url=self.worker_endpoint)
+        if self._opcua_username is not None:
+            if self._opcua_password is None:
+                raise ValueError("OPC UA password is missing")
+            self._client.set_user(self._opcua_username)
+            self._client.set_password(self._opcua_password)
         await self._client.connect()
         log.info("connected to worker", extra={
             "session_id": self.session_id,
@@ -200,14 +211,36 @@ class WorkerMirror:
             try:
                 await self._subscription.delete()
             except Exception:
-                pass
+                log.exception("failed to delete worker subscription",
+                              extra={"session_id": self.session_id,
+                                     "session_name": self.session_name})
             self._subscription = None
         if self._client is not None:
             try:
                 await self._client.disconnect()
             except Exception:
-                pass
+                log.exception("failed to disconnect worker client",
+                              extra={"session_id": self.session_id,
+                                     "session_name": self.session_name})
             self._client = None
+        if self._session_folder is not None:
+            try:
+                _, results = await self._server.delete_nodes(
+                    [self._session_folder], recursive=True
+                )
+                if any(not result.is_good() for result in results):
+                    log.error("failed to delete mirrored session folder",
+                              extra={"session_id": self.session_id,
+                                     "session_name": self.session_name,
+                                     "status_codes": [
+                                         str(result) for result in results
+                                     ]})
+            except Exception:
+                log.exception("failed to delete mirrored session folder",
+                              extra={"session_id": self.session_id,
+                                     "session_name": self.session_name})
+            self._session_folder = None
+        self._map.clear()
 
     # --- mirroring ---
 
@@ -292,7 +325,9 @@ class WorkerMirror:
             return
 
         handler = _MirrorSubscriptionHandler(self._map)
-        self._subscription = await self._client.create_subscription(500, handler)
+        self._subscription = await self._client.create_subscription(
+            self._sampling_interval_ms, handler
+        )
 
         worker_nodes = [
             self._client.get_node(nid_str) for nid_str in self._map.keys()

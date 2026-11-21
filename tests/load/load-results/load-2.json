@@ -1,0 +1,586 @@
+{
+  "tool": "fake_plc",
+  "started_at": "2026-11-11T06:24:55.413704+00:00",
+  "startup_duration_s": 2.074,
+  "duration_s": 15.011,
+  "client_count": 2,
+  "clients": [
+    {
+      "session": "lte9b538c9_000",
+      "connection_latency_ms": 8.385553001062362,
+      "ready_wait_s": 1.567,
+      "startup_retries": 3,
+      "active": true,
+      "notifications": 141,
+      "dropped_subscriptions": 0,
+      "attempts": 15,
+      "successes": 15,
+      "errors": 0,
+      "error_messages": [],
+      "round_trip_latency_ms": {
+        "p50": 2.017,
+        "p95": 2.672,
+        "samples": 15
+      }
+    },
+    {
+      "session": "lte9b538c9_001",
+      "connection_latency_ms": 6.454956999732531,
+      "ready_wait_s": 2.073,
+      "startup_retries": 4,
+      "active": true,
+      "notifications": 136,
+      "dropped_subscriptions": 0,
+      "attempts": 15,
+      "successes": 15,
+      "errors": 0,
+      "error_messages": [],
+      "round_trip_latency_ms": {
+        "p50": 1.961,
+        "p95": 2.903,
+        "samples": 15
+      }
+    }
+  ],
+  "aggregate": {
+    "connection_latency_ms": {
+      "p50": 7.42,
+      "p95": 8.289,
+      "samples": 2
+    },
+    "write_read_round_trip_latency_ms": {
+      "p50": 1.987,
+      "p95": 2.681,
+      "samples": 30
+    },
+    "attempts": 30,
+    "successes": 30,
+    "errors": 0,
+    "error_rate_percent": 0.0,
+    "dropped_subscriptions": 0,
+    "subscription_notifications": 277
+  },
+  "resources": {
+    "interval_s": 1.0,
+    "roles": {
+      "gateway": {
+        "processes": 1,
+        "samples": 21,
+        "avg_cpu_percent": 7.749,
+        "peak_cpu_percent": 22.262,
+        "avg_rss_mb": 111.387,
+        "peak_rss_mb": 111.547,
+        "missing_process_observations": 0
+      },
+      "daemon": {
+        "processes": 1,
+        "samples": 21,
+        "avg_cpu_percent": 0.05,
+        "peak_cpu_percent": 0.998,
+        "avg_rss_mb": 39.512,
+        "peak_rss_mb": 39.512,
+        "missing_process_observations": 0
+      },
+      "workers": {
+        "processes": 2,
+        "samples": 21,
+        "avg_cpu_percent": 25.215,
+        "peak_cpu_percent": 154.49,
+        "avg_rss_mb": 201.539,
+        "peak_rss_mb": 222.27,
+        "missing_process_observations": 0
+      }
+    },
+    "samples": [
+      {
+        "elapsed_s": 0.0,
+        "roles": {
+          "gateway": {
+            "cpu_percent": null,
+            "rss_mb": 111.242,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "daemon": {
+            "cpu_percent": null,
+            "rss_mb": 39.512,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "workers": {
+            "cpu_percent": null,
+            "rss_mb": 80.508,
+            "process_count": 2,
+            "missing_processes": 0
+          }
+        }
+      },
+      {
+        "elapsed_s": 1.003,
+        "roles": {
+          "gateway": {
+            "cpu_percent": 0.0,
+            "rss_mb": 111.242,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "daemon": {
+            "cpu_percent": 0.0,
+            "rss_mb": 39.512,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "workers": {
+            "cpu_percent": 55.818,
+            "rss_mb": 105.098,
+            "process_count": 2,
+            "missing_processes": 0
+          }
+        }
+      },
+      {
+        "elapsed_s": 2.005,
+        "roles": {
+          "gateway": {
+            "cpu_percent": 0.0,
+            "rss_mb": 111.242,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "daemon": {
+            "cpu_percent": 0.0,
+            "rss_mb": 39.512,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "workers": {
+            "cpu_percent": 37.944,
+            "rss_mb": 120.758,
+            "process_count": 2,
+            "missing_processes": 0
+          }
+        }
+      },
+      {
+        "elapsed_s": 3.006,
+        "roles": {
+          "gateway": {
+            "cpu_percent": 2.996,
+            "rss_mb": 111.254,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "daemon": {
+            "cpu_percent": 0.0,
+            "rss_mb": 39.512,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "workers": {
+            "cpu_percent": 71.915,
+            "rss_mb": 154.352,
+            "process_count": 2,
+            "missing_processes": 0
+          }
+        }
+      },
+      {
+        "elapsed_s": 4.009,
+        "roles": {
+          "gateway": {
+            "cpu_percent": 5.98,
+            "rss_mb": 111.277,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "daemon": {
+            "cpu_percent": 0.0,
+            "rss_mb": 39.512,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "workers": {
+            "cpu_percent": 154.49,
+            "rss_mb": 215.355,
+            "process_count": 2,
+            "missing_processes": 0
+          }
+        }
+      },
+      {
+        "elapsed_s": 5.011,
+        "roles": {
+          "gateway": {
+            "cpu_percent": 5.987,
+            "rss_mb": 111.328,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "daemon": {
+            "cpu_percent": 0.0,
+            "rss_mb": 39.512,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "workers": {
+            "cpu_percent": 23.947,
+            "rss_mb": 222.254,
+            "process_count": 2,
+            "missing_processes": 0
+          }
+        }
+      },
+      {
+        "elapsed_s": 6.013,
+        "roles": {
+          "gateway": {
+            "cpu_percent": 2.994,
+            "rss_mb": 111.332,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "daemon": {
+            "cpu_percent": 0.0,
+            "rss_mb": 39.512,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "workers": {
+            "cpu_percent": 2.994,
+            "rss_mb": 222.254,
+            "process_count": 2,
+            "missing_processes": 0
+          }
+        }
+      },
+      {
+        "elapsed_s": 7.016,
+        "roles": {
+          "gateway": {
+            "cpu_percent": 3.991,
+            "rss_mb": 111.348,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "daemon": {
+            "cpu_percent": 0.0,
+            "rss_mb": 39.512,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "workers": {
+            "cpu_percent": 3.991,
+            "rss_mb": 222.254,
+            "process_count": 2,
+            "missing_processes": 0
+          }
+        }
+      },
+      {
+        "elapsed_s": 8.018,
+        "roles": {
+          "gateway": {
+            "cpu_percent": 4.99,
+            "rss_mb": 111.355,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "daemon": {
+            "cpu_percent": 0.0,
+            "rss_mb": 39.512,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "workers": {
+            "cpu_percent": 5.988,
+            "rss_mb": 222.254,
+            "process_count": 2,
+            "missing_processes": 0
+          }
+        }
+      },
+      {
+        "elapsed_s": 9.019,
+        "roles": {
+          "gateway": {
+            "cpu_percent": 5.99,
+            "rss_mb": 111.371,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "daemon": {
+            "cpu_percent": 0.0,
+            "rss_mb": 39.512,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "workers": {
+            "cpu_percent": 6.989,
+            "rss_mb": 222.262,
+            "process_count": 2,
+            "missing_processes": 0
+          }
+        }
+      },
+      {
+        "elapsed_s": 10.021,
+        "roles": {
+          "gateway": {
+            "cpu_percent": 5.987,
+            "rss_mb": 111.387,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "daemon": {
+            "cpu_percent": 0.0,
+            "rss_mb": 39.512,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "workers": {
+            "cpu_percent": 6.985,
+            "rss_mb": 222.262,
+            "process_count": 2,
+            "missing_processes": 0
+          }
+        }
+      },
+      {
+        "elapsed_s": 11.024,
+        "roles": {
+          "gateway": {
+            "cpu_percent": 6.985,
+            "rss_mb": 111.398,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "daemon": {
+            "cpu_percent": 0.0,
+            "rss_mb": 39.512,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "workers": {
+            "cpu_percent": 9.978,
+            "rss_mb": 222.27,
+            "process_count": 2,
+            "missing_processes": 0
+          }
+        }
+      },
+      {
+        "elapsed_s": 12.026,
+        "roles": {
+          "gateway": {
+            "cpu_percent": 7.982,
+            "rss_mb": 111.414,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "daemon": {
+            "cpu_percent": 0.0,
+            "rss_mb": 39.512,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "workers": {
+            "cpu_percent": 7.982,
+            "rss_mb": 222.27,
+            "process_count": 2,
+            "missing_processes": 0
+          }
+        }
+      },
+      {
+        "elapsed_s": 13.028,
+        "roles": {
+          "gateway": {
+            "cpu_percent": 7.983,
+            "rss_mb": 111.43,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "daemon": {
+            "cpu_percent": 0.0,
+            "rss_mb": 39.512,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "workers": {
+            "cpu_percent": 10.977,
+            "rss_mb": 222.27,
+            "process_count": 2,
+            "missing_processes": 0
+          }
+        }
+      },
+      {
+        "elapsed_s": 14.03,
+        "roles": {
+          "gateway": {
+            "cpu_percent": 9.981,
+            "rss_mb": 111.445,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "daemon": {
+            "cpu_percent": 0.0,
+            "rss_mb": 39.512,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "workers": {
+            "cpu_percent": 10.979,
+            "rss_mb": 222.27,
+            "process_count": 2,
+            "missing_processes": 0
+          }
+        }
+      },
+      {
+        "elapsed_s": 15.032,
+        "roles": {
+          "gateway": {
+            "cpu_percent": 10.975,
+            "rss_mb": 111.465,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "daemon": {
+            "cpu_percent": 0.0,
+            "rss_mb": 39.512,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "workers": {
+            "cpu_percent": 11.973,
+            "rss_mb": 222.27,
+            "process_count": 2,
+            "missing_processes": 0
+          }
+        }
+      },
+      {
+        "elapsed_s": 16.034,
+        "roles": {
+          "gateway": {
+            "cpu_percent": 10.977,
+            "rss_mb": 111.484,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "daemon": {
+            "cpu_percent": 0.998,
+            "rss_mb": 39.512,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "workers": {
+            "cpu_percent": 14.969,
+            "rss_mb": 222.27,
+            "process_count": 2,
+            "missing_processes": 0
+          }
+        }
+      },
+      {
+        "elapsed_s": 17.036,
+        "roles": {
+          "gateway": {
+            "cpu_percent": 13.98,
+            "rss_mb": 111.5,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "daemon": {
+            "cpu_percent": 0.0,
+            "rss_mb": 39.512,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "workers": {
+            "cpu_percent": 13.98,
+            "rss_mb": 222.27,
+            "process_count": 2,
+            "missing_processes": 0
+          }
+        }
+      },
+      {
+        "elapsed_s": 18.038,
+        "roles": {
+          "gateway": {
+            "cpu_percent": 11.973,
+            "rss_mb": 111.523,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "daemon": {
+            "cpu_percent": 0.0,
+            "rss_mb": 39.512,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "workers": {
+            "cpu_percent": 16.961,
+            "rss_mb": 222.27,
+            "process_count": 2,
+            "missing_processes": 0
+          }
+        }
+      },
+      {
+        "elapsed_s": 19.04,
+        "roles": {
+          "gateway": {
+            "cpu_percent": 12.969,
+            "rss_mb": 111.539,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "daemon": {
+            "cpu_percent": 0.0,
+            "rss_mb": 39.512,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "workers": {
+            "cpu_percent": 15.961,
+            "rss_mb": 222.27,
+            "process_count": 2,
+            "missing_processes": 0
+          }
+        }
+      },
+      {
+        "elapsed_s": 19.4,
+        "roles": {
+          "gateway": {
+            "cpu_percent": 22.262,
+            "rss_mb": 111.547,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "daemon": {
+            "cpu_percent": 0.0,
+            "rss_mb": 39.512,
+            "process_count": 1,
+            "missing_processes": 0
+          },
+          "workers": {
+            "cpu_percent": 19.479,
+            "rss_mb": 222.27,
+            "process_count": 2,
+            "missing_processes": 0
+          }
+        }
+      }
+    ]
+  },
+  "sessions_created": 2,
+  "session_count": 2,
+  "scaling_verdict": {
+    "stable_at_tested_load": true,
+    "criteria": "zero client errors, dropped subscriptions, and missing process observations"
+  }
+}

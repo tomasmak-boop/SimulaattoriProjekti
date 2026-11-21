@@ -142,12 +142,18 @@ class WorkerPoolManager:
         session_name: str,
         simulation_id: str,
         config_params: dict[str, Any] | None = None,
+        opcua_username: str | None = None,
+        opcua_password: str | None = None,
     ) -> SpawnedWorker:
         """Spawn a new worker process and track it.
 
         Raises AlreadyRunningError if session_id is already tracked.
         Raises WorkerStartupError if the process exits during startup.
         """
+        if (opcua_username is None) != (opcua_password is None):
+            raise ValueError(
+                "OPC UA username and password must be provided together"
+            )
         async with self._lock:
             if session_id in self._workers:
                 raise AlreadyRunningError(
@@ -163,6 +169,8 @@ class WorkerPoolManager:
                 simulation_id=simulation_id,
                 port=port,
                 config_params=config_params or {},
+                opcua_username=opcua_username,
+                opcua_password=opcua_password,
             )
         except Exception:
             await self._allocator.release(port, session_id)
@@ -213,12 +221,19 @@ class WorkerPoolManager:
         simulation_id: str,
         port: int,
         config_params: dict[str, Any],
+        opcua_username: str | None,
+        opcua_password: str | None,
     ) -> asyncio.subprocess.Process:
         env = {
             **os.environ,
             "SIM_MANAGED": "1",
             "LOG_LEVEL": self._log_level,
         }
+        env.pop("OPCUA_SESSION_USERNAME", None)
+        env.pop("OPCUA_SESSION_PASSWORD", None)
+        if opcua_username is not None and opcua_password is not None:
+            env["OPCUA_SESSION_USERNAME"] = opcua_username
+            env["OPCUA_SESSION_PASSWORD"] = opcua_password
         cmd = [
             self._python, "-m", self._worker_module,
             "--session-id", session_id,

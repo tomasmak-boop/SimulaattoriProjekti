@@ -112,6 +112,8 @@ class Session(models.Model):
 
     label = models.CharField(max_length=128, blank=True)
     config_params = models.JSONField(default=dict, blank=True)
+    opcua_username = models.CharField(max_length=64, null=True, blank=True)
+    opcua_password = models.CharField(max_length=128, null=True, blank=True)
 
     # Runtime state, mirrored from Redis. The daemon is authoritative.
     status = models.CharField(

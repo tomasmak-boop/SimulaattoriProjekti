@@ -12,8 +12,8 @@ Design notes:
   applied via BaseSimulation.write_command(). A ValueError from the plugin
   is translated to BadOutOfRange for the client.
 - Pulse commands (spec.pulse=True) are auto-cleared on the next tick.
-- External reads and writes are observed via asyncua's PostRead/PostWrite
-  callbacks, which feed idle detection in the worker runtime.
+- OPC UA reads/writes and dashboard requests update activity tracking for
+  the worker idle detector.
 - Browse names are qualified in the adapter's own namespace. Passing a
   plain string to add_object/add_variable/add_folder would place the
   BrowseName in ns=0 (the OPC UA base namespace), which makes client-side
@@ -33,14 +33,18 @@ Design notes:
 from __future__ import annotations
 
 import asyncio
+import hmac
+import threading
 import time
 from typing import Any, Awaitable, Callable
 
 from asyncua import Server, ua
 from asyncua.common.callback import CallbackType
 from asyncua.common.utils import ServiceError
+from asyncua.crypto.permission_rules import User, UserRole
+from asyncua.server.user_managers import UserManager
 
-from shared.constants import PHYSICS_HZ
+from shared.constants import OPCUA_AUTH_MODE, PHYSICS_HZ
 from shared.logging import get_logger
 from sim_runtime.base import BaseSimulation, CommandSpec
 
@@ -68,6 +72,28 @@ _ZERO_VALUES: dict[str, Any] = {
     "float": 0.0,
     "string": "",
 }
+
+
+class _SessionUserManager(UserManager):
+    def __init__(self, username: str, password: str) -> None:
+        self._username = username
+        self._password = password
+
+    def get_user(
+        self,
+        iserver,
+        username: str | None = None,
+        password: str | None = None,
+        certificate=None,
+    ) -> User | None:
+        if (
+            username is not None
+            and password is not None
+            and hmac.compare_digest(username, self._username)
+            and hmac.compare_digest(password, self._password)
+        ):
+            return User(role=UserRole.User, name=username)
+        return None
 
 
 def _ua_type(type_name: str) -> ua.VariantType:
@@ -155,6 +181,8 @@ class OPCUAAdapter:
         port: int,
         bind_host: str = "0.0.0.0",
         server_name: str | None = None,
+        opcua_username: str | None = None,
+        opcua_password: str | None = None,
     ) -> None:
         self._sim = sim
         self._sim_id = sim.SIMULATION_ID
@@ -174,7 +202,16 @@ class OPCUAAdapter:
 
         self._namespace_uri = f"urn:cip-sim:{self._sim_id}:{sim.SIMULATION_VERSION}"
 
-        self._server = Server()
+        user_manager = None
+        if OPCUA_AUTH_MODE == "per_session":
+            if not opcua_username or not opcua_password:
+                raise ValueError(
+                    "per_session OPC UA authentication requires credentials"
+                )
+            user_manager = _SessionUserManager(
+                opcua_username, opcua_password
+            )
+        self._server = Server(user_manager=user_manager)
         self._server_name = server_name or f"{sim.SIMULATION_NAME} simulator"
         self._namespace_idx: int = 0
 
@@ -189,6 +226,7 @@ class OPCUAAdapter:
         # External activity tracking (PostRead / PostWrite).
         self._last_external_activity: float | None = None
         self._external_request_count: int = 0
+        self._activity_lock = threading.Lock()
 
         self._log = get_logger(
             __name__, simulation_id=self._sim_id, port=port
@@ -202,14 +240,21 @@ class OPCUAAdapter:
         return self._endpoint
 
     def last_external_activity(self) -> float | None:
-        """Monotonic timestamp of the last external client read or write.
+        """Monotonic time of the last external client or dashboard activity.
 
         None if no external client has touched this session yet.
         """
-        return self._last_external_activity
+        with self._activity_lock:
+            return self._last_external_activity
 
     def external_request_count(self) -> int:
-        return self._external_request_count
+        with self._activity_lock:
+            return self._external_request_count
+
+    def record_external_activity(self) -> None:
+        with self._activity_lock:
+            self._last_external_activity = time.monotonic()
+            self._external_request_count += 1
 
     async def initialize(self) -> None:
         """Build the address space. Called once before run()."""
@@ -222,11 +267,15 @@ class OPCUAAdapter:
         self._server.set_server_name(self._server_name)
         await self._server.set_application_uri(f"urn:cip-sim:server:{self._sim_id}")
 
-        # v1: trusted intranet. No transport security, anonymous clients.
-        # v2 direction: Basic256Sha256_SignAndEncrypt with per-session X.509
-        # certificates and a trust list. See plan section on OPC UA security.
+        # Worker connections remain on NoSecurity; identity is anonymous by
+        # default and username/password when per-session auth is enabled.
         self._server.set_security_policy([ua.SecurityPolicyType.NoSecurity])
-        self._server.set_identity_tokens([ua.AnonymousIdentityToken])
+        token_type = (
+            ua.UserNameIdentityToken
+            if OPCUA_AUTH_MODE == "per_session"
+            else ua.AnonymousIdentityToken
+        )
+        self._server.set_identity_tokens([token_type])
 
         self._namespace_idx = await self._server.register_namespace(
             self._namespace_uri
@@ -533,8 +582,7 @@ class OPCUAAdapter:
         def on_activity(event, service) -> None:
             if not event.is_external:
                 return
-            self._last_external_activity = time.monotonic()
-            self._external_request_count += 1
+            self.record_external_activity()
             try:
                 self._sim.on_client_activity()
             except Exception:

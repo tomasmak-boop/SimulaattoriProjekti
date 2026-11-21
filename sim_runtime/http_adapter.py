@@ -19,6 +19,7 @@ import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Callable
 
 from shared.logging import get_logger
 from sim_runtime.base import BaseSimulation
@@ -62,11 +63,15 @@ def _make_handler(
     session_id: str,
     endpoint: str,
     page_bytes: bytes,
+    on_activity: Callable[[], None] | None = None,
 ):
     log = get_logger(__name__, session_id=session_id)
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
+            if on_activity is not None:
+                on_activity()
+
             if self.path in ("/", "/index.html"):
                 self._send(200, "text/html; charset=utf-8", page_bytes)
                 return
@@ -125,11 +130,16 @@ class HTTPDashboard:
         port: int,
         session_id: str,
         endpoint: str,
+        on_activity: Callable[[], None] | None = None,
     ) -> None:
         self._log = get_logger(__name__, session_id=session_id, port=port)
         page = _compose_page(sim)
         handler = _make_handler(
-            sim, session_id=session_id, endpoint=endpoint, page_bytes=page
+            sim,
+            session_id=session_id,
+            endpoint=endpoint,
+            page_bytes=page,
+            on_activity=on_activity,
         )
         self._server = _ReusableThreadingHTTPServer((host, port), handler)
         self._thread = threading.Thread(

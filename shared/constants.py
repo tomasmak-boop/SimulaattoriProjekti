@@ -7,6 +7,7 @@ time so systemd's EnvironmentFile is the single source of configuration.
 
 from __future__ import annotations
 
+import math
 import os
 from typing import Final
 
@@ -19,6 +20,19 @@ def _int_env(name: str, default: int) -> int:
         return int(raw)
     except ValueError as exc:
         raise RuntimeError(f"{name}={raw!r} is not an integer") from exc
+
+
+def _float_env(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name}={raw!r} is not a number") from exc
+    if not math.isfinite(value) or value <= 0:
+        raise RuntimeError(f"{name} must be greater than zero")
+    return value
 
 
 # --- Redis Streams ---------------------------------------------------------
@@ -50,6 +64,20 @@ HEARTBEAT_INTERVAL: Final[int] = _int_env("HEARTBEAT_INTERVAL", 10)
 HEARTBEAT_TTL: Final[int] = _int_env("HEARTBEAT_TTL", 30)
 RECONCILE_INTERVAL: Final[int] = _int_env("RECONCILE_INTERVAL", 15)
 
+# --- Session admission and OPC UA authentication ---------------------------
+MAX_CONCURRENT_SESSIONS: Final[int] = 100
+CREATE_REQUESTS_PER_MINUTE: Final[int] = 10
+CREATE_RATE_WINDOW_SECONDS: Final[int] = 60
+CREATE_RATE_LIMIT_PREFIX: Final[str] = "cip:ratelimit:create:"
+
+OPCUA_AUTH_MODE: Final[str] = os.environ.get(
+    "OPCUA_AUTH_MODE", "none"
+).strip().lower()
+if OPCUA_AUTH_MODE not in {"none", "per_session"}:
+    raise RuntimeError(
+        "OPCUA_AUTH_MODE must be 'none' or 'per_session'"
+    )
+
 
 # --- Loop rates (Hz) -------------------------------------------------------
 PHYSICS_HZ: Final[int] = _int_env("PHYSICS_HZ", 10)
@@ -64,3 +92,20 @@ PID_DIR: Final[str] = "/var/lib/cip-sim/pids"
 # --- Gateway ---------------------------------------------------------------
 GATEWAY_OPCUA_PORT: Final[int] = _int_env("GATEWAY_OPCUA_PORT", 8080)
 GATEWAY_EVT_CONSUMER_GROUP: Final[str] = "gateway"
+GATEWAY_RECONNECT_ATTEMPTS: Final[int] = _int_env(
+    "GATEWAY_RECONNECT_ATTEMPTS", 5
+)
+GATEWAY_RECONNECT_BASE_DELAY: Final[float] = _float_env(
+    "GATEWAY_RECONNECT_BASE_DELAY", 0.3
+)
+GATEWAY_RECONNECT_MAX_DELAY: Final[float] = _float_env(
+    "GATEWAY_RECONNECT_MAX_DELAY", 1.5
+)
+GATEWAY_SAMPLING_INTERVAL_MS: Final[int] = _int_env(
+    "GATEWAY_SAMPLING_INTERVAL_MS", 500
+)
+
+if GATEWAY_RECONNECT_ATTEMPTS < 1:
+    raise RuntimeError("GATEWAY_RECONNECT_ATTEMPTS must be at least 1")
+if GATEWAY_SAMPLING_INTERVAL_MS < 1:
+    raise RuntimeError("GATEWAY_SAMPLING_INTERVAL_MS must be at least 1")

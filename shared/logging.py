@@ -50,6 +50,15 @@ class JSONFormatter(logging.Formatter):
         return json.dumps(payload, separators=(",", ":"), default=str)
 
 
+class _ContextLoggerAdapter(logging.LoggerAdapter):
+    """Keep adapter context while merging per-call structured fields."""
+
+    def process(self, msg, kwargs):
+        extra = kwargs.get("extra")
+        kwargs["extra"] = {**self.extra, **(extra or {})}
+        return msg, kwargs
+
+
 def configure_logging(level: str = "INFO") -> None:
     """Install the JSON formatter on the root logger. Call once per process."""
     handler = logging.StreamHandler(sys.stdout)
@@ -72,4 +81,4 @@ def get_logger(name: str, **context: Any) -> logging.LoggerAdapter:
         log = get_logger(__name__, session_id=sid)
         log.info("worker started")   # -> {"session_id": sid, ...}
     """
-    return logging.LoggerAdapter(logging.getLogger(name), context)
+    return _ContextLoggerAdapter(logging.getLogger(name), context)

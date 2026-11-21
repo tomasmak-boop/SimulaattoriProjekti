@@ -56,6 +56,7 @@ from worker_pool.manager import (
     WorkerPoolManager,
     WorkerStartupError,
 )
+from worker_pool.port_allocator import PortPoolExhausted
 
 
 log = get_logger(__name__)
@@ -224,6 +225,8 @@ class RedisBridge:
                 session_name=cmd.session_name,
                 simulation_id=cmd.simulation_id,
                 config_params=cmd.config_params,
+                opcua_username=cmd.opcua_username,
+                opcua_password=cmd.opcua_password,
             )
         except AlreadyRunningError:
             self._log.info("start ignored; session already running",
@@ -241,6 +244,13 @@ class RedisBridge:
                 session_id=cmd.session_id,
                 session_name=cmd.session_name,
                 error=f"manager error: {exc}",
+            ))
+            return
+        except PortPoolExhausted as exc:
+            await self.publish_event(SessionFailedEvent(
+                session_id=cmd.session_id,
+                session_name=cmd.session_name,
+                error=f"worker port pool exhausted: {exc}",
             ))
             return
 
